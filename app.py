@@ -176,7 +176,7 @@ def load_ai_session(model_name: str):
 
 
 @st.cache_data(show_spinner=False, max_entries=4)
-def ai_cutout(image_bytes: bytes, model_name: str, cloth_category: str = "Both") -> bytes:
+def ai_cutout(image_bytes: bytes, model_name: str) -> bytes:
     from rembg import remove
 
     source = Image.open(io.BytesIO(image_bytes)).convert("RGB")
@@ -184,30 +184,10 @@ def ai_cutout(image_bytes: bytes, model_name: str, cloth_category: str = "Both")
     small = source.copy()
     small.thumbnail((MAX_MASK_EDGE, MAX_MASK_EDGE), Image.LANCZOS)
     
-    session = load_ai_session(model_name)
+    raw_mask = remove(small, session=load_ai_session(model_name), only_mask=True)
     
-    if model_name == "u2net_cloth_seg":
-        # Request all categorical masks (Upper, Lower, Full) explicitly
-        results = remove(small, session=session, only_mask=True, return_multiple=True)
-        
-        # Fallback safeguard if the rembg version doesn't return a list
-        if not isinstance(results, list):
-            results = [results]
-            
-        if len(results) >= 3:
-            if cloth_category == "Upper Body":
-                raw_mask = results[0]
-            elif cloth_category == "Lower Body":
-                raw_mask = results[1]
-            else:
-                raw_mask = results[2]  # Full outfit
-        else:
-            raw_mask = results[0]
-    else:
-        raw_mask = remove(small, session=session, only_mask=True)
-
-    # Robust alpha extraction: pulls the exact opacity map regardless of whether 
-    # rembg returned a 1-channel grayscale mask or a 4-channel RGBA cutout.
+    # Robust extraction: catches edge cases where the rembg API bypasses only_mask=True 
+    # and returns a 4-channel RGBA cutout instead of a 1-channel L mask. 
     channels = raw_mask.split()
     mask = channels[-1] if len(channels) == 4 else raw_mask.convert("L")
 
@@ -288,14 +268,6 @@ if method == "AI cutout":
     model_label = st.sidebar.selectbox("Model", list(AI_MODELS), index=0)
     model_name = AI_MODELS[model_label]
     
-    cloth_category = "Both"
-    if model_name == "u2net_cloth_seg":
-        cloth_category = st.sidebar.radio(
-            "Garment to extract",
-            ["Upper Body", "Lower Body", "Both"],
-            horizontal=True
-        )
-
     st.sidebar.markdown(
         '<div class="cw-sidebar-sub" style="margin-top:0.6rem;">Runs single-threaded '
         'with the ONNX memory arena off, and masks at 1024&nbsp;px, to hold steady '
@@ -324,9 +296,8 @@ with col2:
     try:
         if method == "AI cutout":
             with st.spinner("Cutting out the garment… the first run downloads the model."):
-                category_arg = cloth_category if model_name == "u2net_cloth_seg" else "Both"
-                extracted_image = Image.open(io.BytesIO(ai_cutout(image_bytes, model_name, category_arg)))
-            note = f"{model_label.split(' — ')[0]} ({category_arg})" if model_name == "u2net_cloth_seg" else model_label.split(" — ")[0]
+                extracted_image = Image.open(io.BytesIO(ai_cutout(image_bytes, model_name)))
+            note = model_label.split(" — ")[0]
         else:
             with st.spinner("Calculating chroma key…"):
                 extracted_image = chroma_cutout(img_array, key_color_hex, tola, tolb, grow_px)
