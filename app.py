@@ -3,8 +3,7 @@ import numpy as np
 from PIL import Image
 import io
 import cv2
-from chromakey import ChromaKey 
-
+from ChromaKey import ChromaKey
 # Set up the web page layout
 st.set_page_config(layout="wide", page_title="Green Screen Remover")
 st.title("🟩 Green Screen Background Remover")
