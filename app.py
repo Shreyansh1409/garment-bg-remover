@@ -8,9 +8,6 @@ from scipy.ndimage import distance_transform_edt
 
 st.set_page_config(layout="wide", page_title="Cutaway — Garment Extractor", page_icon="✂️")
 
-# ---------------------------------------------------------------------------
-# Styling
-# ---------------------------------------------------------------------------
 st.markdown(
     """
     <style>
@@ -153,13 +150,11 @@ st.markdown(
 # AI cutout (segmentation / matting)
 # ---------------------------------------------------------------------------
 AI_MODELS = {
-    "u2net_cloth_seg — garments only (removes skin)": "u2net_cloth_seg",
-    "u2netp — light and fast (general cutout)": "u2netp",
-    "u2net — slightly cleaner, ~2x memory (general cutout)": "u2net",
+    "u2netp — light and fast (default)": "u2netp",
+    "u2net — slightly cleaner, ~2x memory": "u2net",
 }
 
-MAX_MASK_EDGE = 1024  # longest edge used for mask inference
-
+MAX_MASK_EDGE = 1024  
 
 @st.cache_resource(show_spinner=False)
 def load_ai_session(model_name: str):
@@ -186,8 +181,6 @@ def ai_cutout(image_bytes: bytes, model_name: str) -> bytes:
     
     raw_mask = remove(small, session=load_ai_session(model_name), only_mask=True)
     
-    # Robust extraction: catches edge cases where the rembg API bypasses only_mask=True 
-    # and returns a 4-channel RGBA cutout instead of a 1-channel L mask. 
     channels = raw_mask.split()
     mask = channels[-1] if len(channels) == 4 else raw_mask.convert("L")
 
