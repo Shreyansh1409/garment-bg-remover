@@ -10,12 +10,6 @@ st.set_page_config(layout="wide", page_title="Cutaway — Garment Extractor", pa
 
 # ---------------------------------------------------------------------------
 # Styling
-#
-# Visual language borrows from the pattern-cutting table: a cutting-mat green
-# workspace, paper swatch cards for the images, a bobbin-thread red for
-# actions, and a brass-pin gold for secondary accents. Two typefaces: an
-# editorial serif (Fraunces) for the masthead, a plain grotesk (Inter) for
-# every working label, control, and button.
 # ---------------------------------------------------------------------------
 st.markdown(
     """
@@ -82,7 +76,6 @@ st.markdown(
         opacity: 0.85;
     }
 
-    /* Sidebar heading */
     .cw-sidebar-title {
         font-family: 'Fraunces', serif;
         font-size: 1.15rem;
@@ -95,7 +88,6 @@ st.markdown(
         margin-bottom: 1.1rem;
     }
 
-    /* Swatch card label chips above each image */
     .cw-chip {
         display: inline-block;
         font-size: 0.78rem;
@@ -108,7 +100,6 @@ st.markdown(
         margin-bottom: 0.6rem;
     }
 
-    /* Paper cards for the two image columns */
     [data-testid="column"] > div {
         background-color: var(--paper);
         border: 1px solid var(--line-on-paper);
@@ -120,7 +111,6 @@ st.markdown(
         border-radius: 3px;
     }
 
-    /* Buttons */
     .stButton > button, [data-testid="stDownloadButton"] button {
         background-color: var(--thread);
         color: var(--text-on-ink) !important;
@@ -138,11 +128,9 @@ st.markdown(
         outline-offset: 2px;
     }
 
-    /* Sliders + color picker accent */
     [data-testid="stSlider"] [role="slider"] { background-color: var(--thread) !important; }
     [data-testid="stSlider"] div[style*="background-color: rgb(255, 75, 75)"] { background-color: var(--thread) !important; }
 
-    /* File uploader */
     [data-testid="stFileUploaderDropzone"] {
         background-color: var(--panel);
         border: 1px dashed var(--line-on-ink);
@@ -163,40 +151,6 @@ st.markdown(
 
 # ---------------------------------------------------------------------------
 # AI cutout (segmentation / matting)
-#
-# This is the default path. It reads the *shape* of the garment rather than its
-# colour, so it works on the studio flat-lays we actually get — soft grey
-# backdrops, gradient lighting, drop shadows — where colour keying cannot work
-# even in principle.
-#
-# Why colour keying fails there: chroma_key() measures distance in Cb/Cr only,
-# discarding luma. A neutral backdrop and a black or white garment are the same
-# colour in chroma space, so the keyer deletes the garment. Measured on a real
-# flat-lay: black trousers came out at 0% alpha. The models below scored 99%.
-#
-# Model choice here is a memory decision first and a quality decision second,
-# because this runs in a small container. Steady-state RSS measured on a real
-# 1037x1716 on-model photo, on top of a ~230 MB Streamlit baseline:
-#
-#   u2net  + alpha matting     2061 MB   <- do not do this
-#   u2net  , stock settings     731 MB   (climbs 531 -> 731 over calls)
-#   u2netp , stock settings     731 MB
-#   u2netp , tuned below        317 MB   flat across repeated calls
-#
-# Three things buy that 6x reduction, in order of size:
-#
-# 1. enable_cpu_mem_arena = False. ONNX Runtime's allocator grows an arena it
-#    never hands back — RSS climbed 531 -> 731 MB between the first and second
-#    inference and stayed there. Turning the arena off keeps it flat, and on
-#    this workload it is also marginally faster.
-# 2. No alpha matting. It builds a sparse system over every pixel and cost
-#    2 GB. For garment edges the gain did not justify a 6x memory bill.
-# 3. The mask is computed on a downscaled copy. u2netp's own output is 320x320
-#    upsampled regardless, so capping the input costs no real detail while
-#    bounding memory for large uploads. The alpha is then resized back and
-#    applied to the FULL-resolution original, so the download stays full size.
-#
-# BiRefNet is not offered: it was OOM-killed in an 8 GB container.
 # ---------------------------------------------------------------------------
 AI_MODELS = {
     "u2net_cloth_seg — garments only (removes skin)": "u2net_cloth_seg",
@@ -209,14 +163,8 @@ MAX_MASK_EDGE = 1024  # longest edge used for mask inference
 
 @st.cache_resource(show_spinner=False)
 def load_ai_session(model_name: str):
-    """Build and cache a memory-constrained ONNX session.
-
-    rembg's new_session() builds its own SessionOptions and gives no way to
-    pass ours, so the session class is constructed directly. Cached across
-    reruns — without this, every widget change reloads the model.
-    """
-    import onnxruntime as ort  # imported lazily so the chroma path still
-    from rembg.sessions import sessions_class  # works if rembg is unavailable
+    import onnxruntime as ort
+    from rembg.sessions import sessions_class
 
     opts = ort.SessionOptions()
     opts.enable_cpu_mem_arena = False
@@ -228,7 +176,7 @@ def load_ai_session(model_name: str):
 
 
 @st.cache_data(show_spinner=False, max_entries=4)
-def ai_cutout(image_bytes: bytes, model_name: str) -> bytes:
+def ai_cutout(image_bytes: bytes, model_name: str, cloth_category: str = "Both") -> bytes:
     from rembg import remove
 
     source = Image.open(io.BytesIO(image_bytes)).convert("RGB")
@@ -236,11 +184,20 @@ def ai_cutout(image_bytes: bytes, model_name: str) -> bytes:
     small = source.copy()
     small.thumbnail((MAX_MASK_EDGE, MAX_MASK_EDGE), Image.LANCZOS)
     
-    # Generate the mask
     mask = remove(small, session=load_ai_session(model_name), only_mask=True)
     
-    # FIX: Force the mask into grayscale (L mode) so putalpha() accepts it
-    mask = mask.convert("L")
+    # Route multi-channel segmentation correctly
+    if model_name == "u2net_cloth_seg":
+        r, g, b = mask.split()
+        if cloth_category == "Upper Body":
+            mask = r
+        elif cloth_category == "Lower Body":
+            mask = g
+        else:
+            # Combine Red (upper) and Green (lower) channels for the full outfit
+            mask = Image.fromarray(np.maximum(np.array(r), np.array(g)))
+    else:
+        mask = mask.convert("L")
 
     result = source.convert("RGBA")
     result.putalpha(mask.resize(source.size, Image.LANCZOS))
@@ -249,21 +206,11 @@ def ai_cutout(image_bytes: bytes, model_name: str) -> bytes:
     result.save(buf, format="PNG")
     return buf.getvalue()
 
+
 # ---------------------------------------------------------------------------
 # Chroma key
-#
-# Kept because on a genuine green screen it still beats the models: the edge is
-# exact, there is no model to download, and it runs in milliseconds.
 # ---------------------------------------------------------------------------
 def detect_background_hex(img_array: np.ndarray, border: int = 10) -> str:
-    """Average the pixels along the image border (almost always background)
-    and return their color as a hex string, so the key color picker starts
-    on the actual background shade instead of a hardcoded pure green.
-
-    Note the limit: this is a single average. On a two-tone background — a wall
-    above and a floor below, say — it returns a colour matching neither, and
-    the key degrades. Use the AI path for those.
-    """
     h, w, _ = img_array.shape
     border = min(border, h // 2, w // 2) or 1
     samples = np.concatenate([
@@ -278,25 +225,9 @@ def detect_background_hex(img_array: np.ndarray, border: int = 10) -> str:
 
 def chroma_cutout(img_array: np.ndarray, key_hex: str, tola: int, tolb: int, grow_px: int) -> Image.Image:
     import chromakey
-
-    # chroma_key() takes a hex string, returns (out, mask) — NOT a single RGBA array.
-    # out  = RGB with the key color subtracted from every pixel in proportion to
-    #        the mask — this "decontaminates" spill at semi-transparent edges
-    #        (anti-aliased pixels blended with the background in the original).
-    # mask = float array, 1.0 = background, 0.0 = foreground
     out, mask = chromakey.chroma_key(img_array, key_hex, tola=tola, tolb=tolb)
+    alpha_f = 1 - mask
 
-    # Use `out` (spill-decontaminated) for RGB, not the raw original — the raw
-    # pixels still carry a colour cast at edges even where alpha is partial,
-    # which shows up as a fringe once composited on any other background.
-    alpha_f = 1 - mask  # 0..1, foreground = 1
-
-    # Decontamination alone still leaves a faint rim on real photos (uneven
-    # studio lighting, anti-aliased edges in the source). Instead of shrinking
-    # the silhouette — which loses thin details like straps and ties — mark a
-    # "trusted core" a few pixels in from the edge as clean garment colour, then
-    # grow that colour outward over the contaminated edge pixels, while keeping
-    # the ORIGINAL soft alpha so the outline shape and antialiasing survive.
     final_rgb = out
     if grow_px > 0:
         fg_binary = (alpha_f > 0.5).astype(np.uint8)
@@ -338,15 +269,21 @@ st.sidebar.markdown(
 method = st.sidebar.radio(
     "Method",
     ["AI cutout", "Chroma key"],
-    label_visibility="collapsed",
-    help="AI cutout handles studio backdrops, gradients and shadows. Chroma key is "
-         "instant and pixel-exact, but only on a background whose colour is far from "
-         "every colour in the garment.",
+    label_visibility="collapsed"
 )
 
 if method == "AI cutout":
     model_label = st.sidebar.selectbox("Model", list(AI_MODELS), index=0)
     model_name = AI_MODELS[model_label]
+    
+    cloth_category = "Both"
+    if model_name == "u2net_cloth_seg":
+        cloth_category = st.sidebar.radio(
+            "Garment to extract",
+            ["Upper Body", "Lower Body", "Both"],
+            horizontal=True
+        )
+
     st.sidebar.markdown(
         '<div class="cw-sidebar-sub" style="margin-top:0.6rem;">Runs single-threaded '
         'with the ONNX memory arena off, and masks at 1024&nbsp;px, to hold steady '
@@ -360,23 +297,9 @@ else:
         unsafe_allow_html=True,
     )
     key_color_hex = st.sidebar.color_picker("Background color", detected_hex)
-    tola = st.sidebar.slider(
-        "Solid background below (tola)", 1, 50, 10,
-        help="Colour distance from the key below which a pixel is treated as pure "
-             "background and removed completely.",
-    )
-    tolb = st.sidebar.slider(
-        "Solid garment above (tolb)", tola + 1, 120, 60,
-        help="Colour distance from the key above which a pixel is treated as pure "
-             "garment and kept completely. Between the two values alpha ramps, which "
-             "is what softens the edge.",
-    )
-    grow_px = st.sidebar.slider(
-        "Fringe removal strength", 0, 5, 2,
-        help="How many pixels in from the edge count as trusted garment colour. That "
-             "colour is grown back outward to replace spill-contaminated edge pixels. "
-             "Raise it if a coloured rim persists; lower it if fine details smear.",
-    )
+    tola = st.sidebar.slider("Solid background below (tola)", 1, 50, 10)
+    tolb = st.sidebar.slider("Solid garment above (tolb)", tola + 1, 120, 60)
+    grow_px = st.sidebar.slider("Fringe removal strength", 0, 5, 2)
 
 col1, col2 = st.columns(2)
 
@@ -389,8 +312,9 @@ with col2:
     try:
         if method == "AI cutout":
             with st.spinner("Cutting out the garment… the first run downloads the model."):
-                extracted_image = Image.open(io.BytesIO(ai_cutout(image_bytes, model_name)))
-            note = model_label.split(" — ")[0]
+                category_arg = cloth_category if model_name == "u2net_cloth_seg" else "Both"
+                extracted_image = Image.open(io.BytesIO(ai_cutout(image_bytes, model_name, category_arg)))
+            note = f"{model_label.split(' — ')[0]} ({category_arg})" if model_name == "u2net_cloth_seg" else model_label.split(" — ")[0]
         else:
             with st.spinner("Calculating chroma key…"):
                 extracted_image = chroma_cutout(img_array, key_color_hex, tola, tolb, grow_px)
@@ -413,5 +337,5 @@ with col2:
             f"Missing dependency: {exc.name}. Add `rembg` and `onnxruntime` to "
             "requirements.txt for the AI path, or switch to Chroma key."
         )
-    except Exception as exc:  # noqa: BLE001 - surface anything else to the user
+    except Exception as exc: 
         st.error(f"Couldn't process this image: {exc}")
