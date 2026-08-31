@@ -188,7 +188,7 @@ def ai_cutout(image_bytes: bytes, model_name: str, cloth_category: str = "Both")
     
     # Route multi-channel segmentation correctly
     if model_name == "u2net_cloth_seg":
-        r, g, b = mask.split()
+        r, g, b = mask.convert("RGB").split()
         if cloth_category == "Upper Body":
             mask = r
         elif cloth_category == "Lower Body":
