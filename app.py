@@ -229,14 +229,18 @@ def load_ai_session(model_name: str):
 
 @st.cache_data(show_spinner=False, max_entries=4)
 def ai_cutout(image_bytes: bytes, model_name: str) -> bytes:
-    """Return RGBA PNG bytes at the original resolution. Cached on the inputs."""
     from rembg import remove
 
     source = Image.open(io.BytesIO(image_bytes)).convert("RGB")
 
     small = source.copy()
     small.thumbnail((MAX_MASK_EDGE, MAX_MASK_EDGE), Image.LANCZOS)
+    
+    # Generate the mask
     mask = remove(small, session=load_ai_session(model_name), only_mask=True)
+    
+    # FIX: Force the mask into grayscale (L mode) so putalpha() accepts it
+    mask = mask.convert("L")
 
     result = source.convert("RGBA")
     result.putalpha(mask.resize(source.size, Image.LANCZOS))
@@ -244,7 +248,6 @@ def ai_cutout(image_bytes: bytes, model_name: str) -> bytes:
     buf = io.BytesIO()
     result.save(buf, format="PNG")
     return buf.getvalue()
-
 
 # ---------------------------------------------------------------------------
 # Chroma key
