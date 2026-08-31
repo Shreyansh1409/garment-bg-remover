@@ -8,16 +8,36 @@ st.set_page_config(layout="wide", page_title="Outfit Extractor")
 st.title("🟩 Outfit / Garment Extractor")
 st.write("Upload a green screen product photo to isolate the garment using chroma keying.")
 
-st.sidebar.header("Chroma Key Settings")
-key_color_hex = st.sidebar.color_picker("Pick your background color", "#00FF00")
-tola = st.sidebar.slider("Edge softness (tola)", 1, 50, 10, help="Distance below which a pixel is fully kept as foreground.")
-tolb = st.sidebar.slider("Edge softness (tolb)", tola + 1, 100, 30, help="Distance above which a pixel is fully treated as background.")
+
+def detect_background_hex(img_array: np.ndarray, border: int = 10) -> str:
+    """Average the pixels along the image border (almost always background)
+    and return their color as a hex string, so the key color picker starts
+    on the actual background shade instead of a hardcoded pure green."""
+    h, w, _ = img_array.shape
+    border = min(border, h // 2, w // 2) or 1
+    samples = np.concatenate([
+        img_array[:border, :, :].reshape(-1, 3),
+        img_array[-border:, :, :].reshape(-1, 3),
+        img_array[:, :border, :].reshape(-1, 3),
+        img_array[:, -border:, :].reshape(-1, 3),
+    ])
+    avg = samples.mean(axis=0).astype(np.uint8)
+    return "#{:02X}{:02X}{:02X}".format(*avg)
+
 
 uploaded_file = st.file_uploader("Upload your green screen photo", type=["png", "jpg", "jpeg"])
 
 if uploaded_file is not None:
-    col1, col2 = st.columns(2)
     original_image = Image.open(uploaded_file).convert("RGB")
+    detected_hex = detect_background_hex(np.array(original_image))
+
+    st.sidebar.header("Chroma Key Settings")
+    st.sidebar.caption(f"Detected background color: {detected_hex}")
+    key_color_hex = st.sidebar.color_picker("Background color", detected_hex)
+    tola = st.sidebar.slider("Edge softness (tola)", 1, 50, 10, help="Distance below which a pixel is fully kept as foreground.")
+    tolb = st.sidebar.slider("Edge softness (tolb)", tola + 1, 120, 60, help="Distance above which a pixel is fully treated as background. Raise this if uneven lighting leaves background pixels partially opaque.")
+
+    col1, col2 = st.columns(2)
 
     with col1:
         st.header("Original Image")
