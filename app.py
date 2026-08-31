@@ -184,20 +184,32 @@ def ai_cutout(image_bytes: bytes, model_name: str, cloth_category: str = "Both")
     small = source.copy()
     small.thumbnail((MAX_MASK_EDGE, MAX_MASK_EDGE), Image.LANCZOS)
     
-    mask = remove(small, session=load_ai_session(model_name), only_mask=True)
+    session = load_ai_session(model_name)
     
-    # Route multi-channel segmentation correctly
     if model_name == "u2net_cloth_seg":
-        r, g, b = mask.convert("RGB").split()
-        if cloth_category == "Upper Body":
-            mask = r
-        elif cloth_category == "Lower Body":
-            mask = g
+        # Request all categorical masks (Upper, Lower, Full) explicitly
+        results = remove(small, session=session, only_mask=True, return_multiple=True)
+        
+        # Fallback safeguard if the rembg version doesn't return a list
+        if not isinstance(results, list):
+            results = [results]
+            
+        if len(results) >= 3:
+            if cloth_category == "Upper Body":
+                raw_mask = results[0]
+            elif cloth_category == "Lower Body":
+                raw_mask = results[1]
+            else:
+                raw_mask = results[2]  # Full outfit
         else:
-            # Combine Red (upper) and Green (lower) channels for the full outfit
-            mask = Image.fromarray(np.maximum(np.array(r), np.array(g)))
+            raw_mask = results[0]
     else:
-        mask = mask.convert("L")
+        raw_mask = remove(small, session=session, only_mask=True)
+
+    # Robust alpha extraction: pulls the exact opacity map regardless of whether 
+    # rembg returned a 1-channel grayscale mask or a 4-channel RGBA cutout.
+    channels = raw_mask.split()
+    mask = channels[-1] if len(channels) == 4 else raw_mask.convert("L")
 
     result = source.convert("RGBA")
     result.putalpha(mask.resize(source.size, Image.LANCZOS))
