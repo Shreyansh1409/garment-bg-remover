@@ -2,6 +2,7 @@ import streamlit as st
 import numpy as np
 from PIL import Image
 import io
+import cv2
 import chromakey
 
 st.set_page_config(layout="wide", page_title="Outfit Extractor")
@@ -36,6 +37,7 @@ if uploaded_file is not None:
     key_color_hex = st.sidebar.color_picker("Background color", detected_hex)
     tola = st.sidebar.slider("Edge softness (tola)", 1, 50, 10, help="Distance below which a pixel is fully kept as foreground.")
     tolb = st.sidebar.slider("Edge softness (tolb)", tola + 1, 120, 60, help="Distance above which a pixel is fully treated as background. Raise this if uneven lighting leaves background pixels partially opaque.")
+    erode_px = st.sidebar.slider("Fringe removal strength", 0, 5, 2, help="Shrinks the cutout edge by this many pixels to strip out green-tinted spill pixels left over from the original background. Raise if you still see a green rim; lower if thin straps/details start disappearing.")
 
     col1, col2 = st.columns(2)
 
@@ -62,7 +64,20 @@ if uploaded_file is not None:
                 # Use `out` (spill-decontaminated) for RGB, not the raw original — the raw
                 # pixels still carry a green tint at edges even where alpha is partial,
                 # which shows up as a green fringe once composited on any other background.
-                alpha = np.uint8((1 - mask) * 255)
+                alpha_f = 1 - mask  # 0..1, foreground=1
+
+                # Decontamination alone still leaves a faint green rim on real photos
+                # (uneven studio lighting, anti-aliased edges in the source image). Erode
+                # the foreground region by a few pixels so those contaminated edge pixels
+                # are dropped entirely instead of staying semi-transparent and green-tinted.
+                if erode_px > 0:
+                    fg_binary = (alpha_f > 0.5).astype(np.uint8)
+                    kernel = np.ones((3, 3), np.uint8)
+                    eroded = cv2.erode(fg_binary, kernel, iterations=erode_px)
+                    safe_zone = cv2.dilate(eroded, kernel, iterations=1)
+                    alpha_f = alpha_f * safe_zone
+
+                alpha = np.uint8(np.clip(alpha_f, 0, 1) * 255)
                 rgba = np.dstack([out, alpha])
                 extracted_image = Image.fromarray(rgba, "RGBA")
 
