@@ -4,6 +4,7 @@ from PIL import Image
 import io
 import cv2
 import chromakey
+from scipy.ndimage import distance_transform_edt
 
 st.set_page_config(layout="wide", page_title="Outfit Extractor")
 st.title("🟩 Outfit / Garment Extractor")
@@ -37,7 +38,7 @@ if uploaded_file is not None:
     key_color_hex = st.sidebar.color_picker("Background color", detected_hex)
     tola = st.sidebar.slider("Edge softness (tola)", 1, 50, 10, help="Distance below which a pixel is fully kept as foreground.")
     tolb = st.sidebar.slider("Edge softness (tolb)", tola + 1, 120, 60, help="Distance above which a pixel is fully treated as background. Raise this if uneven lighting leaves background pixels partially opaque.")
-    erode_px = st.sidebar.slider("Fringe removal strength", 0, 5, 2, help="Shrinks the cutout edge by this many pixels to strip out green-tinted spill pixels left over from the original background. Raise if you still see a green rim; lower if thin straps/details start disappearing.")
+    erode_px = st.sidebar.slider("Fringe removal strength", 0, 5, 2, help="How many pixels in from the edge are treated as 'trusted' garment color, which then gets grown back outward to replace green-tinted spill pixels. Raise if a green rim persists; lower if fine details look smeared.")
 
     col1, col2 = st.columns(2)
 
@@ -67,19 +68,28 @@ if uploaded_file is not None:
                 alpha_f = 1 - mask  # 0..1, foreground=1
 
                 # Decontamination alone still leaves a faint green rim on real photos
-                # (uneven studio lighting, anti-aliased edges in the source image). Erode
-                # the foreground region by a few pixels so those contaminated edge pixels
-                # are dropped entirely instead of staying semi-transparent and green-tinted.
+                # (uneven studio lighting, anti-aliased edges in the source image).
+                # Instead of shrinking the silhouette (which loses shape on thin details),
+                # mark a "trusted core" a few pixels in from the edge as clean garment
+                # color, then grow that color outward to replace the green-tinted edge
+                # pixels — while keeping the ORIGINAL soft alpha, so the outline shape
+                # and antialiasing are preserved.
+                final_rgb = out
                 if erode_px > 0:
                     fg_binary = (alpha_f > 0.5).astype(np.uint8)
                     kernel = np.ones((3, 3), np.uint8)
-                    eroded = cv2.erode(fg_binary, kernel, iterations=erode_px)
-                    safe_zone = cv2.dilate(eroded, kernel, iterations=1)
-                    alpha_f = alpha_f * safe_zone
+                    core = cv2.erode(fg_binary, kernel, iterations=erode_px)
+
+                    if core.any():
+                        # For every non-core pixel, find the nearest core pixel and
+                        # copy its color outward (nearest-neighbor color extension).
+                        _, indices = distance_transform_edt(1 - core, return_indices=True)
+                        grown_rgb = out[indices[0], indices[1]]
+                        final_rgb = np.where(core[..., None].astype(bool), out, grown_rgb)
 
                 alpha = np.uint8(np.clip(alpha_f, 0, 1) * 255)
-                rgba = np.dstack([out, alpha])
-                extracted_image = Image.fromarray(rgba, "RGBA")
+                rgba = np.dstack([final_rgb, alpha])
+                extracted_image = Image.fromarray(rgba.astype(np.uint8), "RGBA")
 
                 st.image(extracted_image, width="stretch")
 
