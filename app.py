@@ -1,9 +1,9 @@
-import streamlit as st
-import numpy as np
-from PIL import Image
 import io
+
 import cv2
-import chromakey
+import numpy as np
+import streamlit as st
+from PIL import Image
 from scipy.ndimage import distance_transform_edt
 
 st.set_page_config(layout="wide", page_title="Cutaway — Garment Extractor", page_icon="✂️")
@@ -155,17 +155,80 @@ st.markdown(
     <div class="cw-hero">
         <h1>Cutaway</h1>
         <hr class="cw-stitch" />
-        <p>Upload a green-screen product photo and pull a clean, transparent cutout of the garment — ready for a catalogue, a listing, or a spec sheet.</p>
+        <p>Pull a clean, transparent cutout of a garment — ready for a catalogue, a listing, or a spec sheet.</p>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
+# ---------------------------------------------------------------------------
+# AI cutout (segmentation / matting)
+#
+# This is the default path. It reads the *shape* of the garment rather than its
+# colour, so it works on the studio flat-lays we actually get — soft grey
+# backdrops, gradient lighting, drop shadows — where colour keying cannot work
+# even in principle.
+#
+# Why colour keying fails there: chroma_key() measures distance in Cb/Cr only,
+# discarding luma. A neutral backdrop and a black or white garment are the same
+# colour in chroma space, so the keyer deletes the garment. Measured on a real
+# flat-lay: black trousers came out at 0% alpha. The models below scored 99%.
+#
+# Model choice is a memory decision as much as a quality one. Peak RSS measured
+# locally: u2net ~899 MB, isnet-general-use ~1.46 GB. BiRefNet (better edges)
+# was OOM-killed in an 8 GB container, so it is not offered here — it will not
+# fit on Streamlit Community Cloud.
+# ---------------------------------------------------------------------------
+AI_MODELS = {
+    "u2net — balanced, lightest (default)": "u2net",
+    "isnet-general-use — crisper edges, ~1.5 GB": "isnet-general-use",
+}
 
+
+@st.cache_resource(show_spinner=False)
+def load_ai_session(model_name: str):
+    """Load and cache an ONNX session. Cached across reruns — without this,
+    every slider nudge would reload the model and cost ~25 s."""
+    from rembg import new_session  # imported lazily so the chroma path still
+
+    return new_session(model_name)  # works if rembg is unavailable
+
+
+@st.cache_data(show_spinner=False, max_entries=4)
+def ai_cutout(image_bytes: bytes, model_name: str, refine_edges: bool) -> bytes:
+    """Return RGBA PNG bytes. Cached on the inputs so re-renders are instant."""
+    from rembg import remove
+
+    session = load_ai_session(model_name)
+    source = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    result = remove(
+        source,
+        session=session,
+        alpha_matting=refine_edges,
+        alpha_matting_foreground_threshold=240,
+        alpha_matting_background_threshold=15,
+        alpha_matting_erode_size=8,
+    )
+    buf = io.BytesIO()
+    result.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# Chroma key
+#
+# Kept because on a genuine green screen it still beats the models: the edge is
+# exact, there is no model to download, and it runs in milliseconds.
+# ---------------------------------------------------------------------------
 def detect_background_hex(img_array: np.ndarray, border: int = 10) -> str:
     """Average the pixels along the image border (almost always background)
     and return their color as a hex string, so the key color picker starts
-    on the actual background shade instead of a hardcoded pure green."""
+    on the actual background shade instead of a hardcoded pure green.
+
+    Note the limit: this is a single average. On a two-tone background — a wall
+    above and a floor below, say — it returns a colour matching neither, and
+    the key degrades. Use the AI path for those.
+    """
     h, w, _ = img_array.shape
     border = min(border, h // 2, w // 2) or 1
     samples = np.concatenate([
@@ -178,87 +241,142 @@ def detect_background_hex(img_array: np.ndarray, border: int = 10) -> str:
     return "#{:02X}{:02X}{:02X}".format(*avg)
 
 
-uploaded_file = st.file_uploader("Upload a photo", type=["png", "jpg", "jpeg"], label_visibility="collapsed")
+def chroma_cutout(img_array: np.ndarray, key_hex: str, tola: int, tolb: int, grow_px: int) -> Image.Image:
+    import chromakey
 
-if uploaded_file is not None:
-    original_image = Image.open(uploaded_file).convert("RGB")
-    detected_hex = detect_background_hex(np.array(original_image))
+    # chroma_key() takes a hex string, returns (out, mask) — NOT a single RGBA array.
+    # out  = RGB with the key color subtracted from every pixel in proportion to
+    #        the mask — this "decontaminates" spill at semi-transparent edges
+    #        (anti-aliased pixels blended with the background in the original).
+    # mask = float array, 1.0 = background, 0.0 = foreground
+    out, mask = chromakey.chroma_key(img_array, key_hex, tola=tola, tolb=tolb)
 
-    st.sidebar.markdown('<div class="cw-sidebar-title">Chroma key settings</div>', unsafe_allow_html=True)
-    st.sidebar.markdown(f'<div class="cw-sidebar-sub">Detected background: {detected_hex}</div>', unsafe_allow_html=True)
-    key_color_hex = st.sidebar.color_picker("Background color", detected_hex)
-    tola = st.sidebar.slider("Edge softness (tola)", 1, 50, 10, help="Distance below which a pixel is fully kept as foreground.")
-    tolb = st.sidebar.slider("Edge softness (tolb)", tola + 1, 120, 60, help="Distance above which a pixel is fully treated as background. Raise this if uneven lighting leaves background pixels partially opaque.")
-    erode_px = st.sidebar.slider("Fringe removal strength", 0, 5, 2, help="How many pixels in from the edge are treated as 'trusted' garment color, which then gets grown back outward to replace green-tinted spill pixels. Raise if a green rim persists; lower if fine details look smeared.")
+    # Use `out` (spill-decontaminated) for RGB, not the raw original — the raw
+    # pixels still carry a colour cast at edges even where alpha is partial,
+    # which shows up as a fringe once composited on any other background.
+    alpha_f = 1 - mask  # 0..1, foreground = 1
 
-    col1, col2 = st.columns(2)
+    # Decontamination alone still leaves a faint rim on real photos (uneven
+    # studio lighting, anti-aliased edges in the source). Instead of shrinking
+    # the silhouette — which loses thin details like straps and ties — mark a
+    # "trusted core" a few pixels in from the edge as clean garment colour, then
+    # grow that colour outward over the contaminated edge pixels, while keeping
+    # the ORIGINAL soft alpha so the outline shape and antialiasing survive.
+    final_rgb = out
+    if grow_px > 0:
+        fg_binary = (alpha_f > 0.5).astype(np.uint8)
+        core = cv2.erode(fg_binary, np.ones((3, 3), np.uint8), iterations=grow_px)
+        if core.any():
+            _, indices = distance_transform_edt(1 - core, return_indices=True)
+            grown_rgb = out[indices[0], indices[1]]
+            final_rgb = np.where(core[..., None].astype(bool), out, grown_rgb)
 
-    with col1:
-        st.markdown('<span class="cw-chip">Original</span>', unsafe_allow_html=True)
-        st.image(original_image, width="stretch")
+    alpha = np.uint8(np.clip(alpha_f, 0, 1) * 255)
+    rgba = np.dstack([final_rgb, alpha]).astype(np.uint8)
+    return Image.fromarray(rgba, "RGBA")
 
-    with col2:
-        st.markdown('<span class="cw-chip">Extracted</span>', unsafe_allow_html=True)
-        with st.spinner("Calculating chroma key..."):
-            try:
-                img_array = np.array(original_image)  # RGB, shape (H, W, 3)
 
-                # chroma_key() takes a hex string, returns (out, mask) — NOT a single RGBA array.
-                # out = RGB with the key color subtracted from every pixel in proportion to
-                #       the mask — this "decontaminates" green spill at semi-transparent
-                #       edges (anti-aliased pixels blended with the background in the
-                #       original photo). Fully-opaque interior pixels are unaffected.
-                # mask = float array, 1.0 = background, 0.0 = foreground
-                out, mask = chromakey.chroma_key(
-                    img_array, key_color_hex, tola=tola, tolb=tolb
-                )
+# ---------------------------------------------------------------------------
+# UI
+# ---------------------------------------------------------------------------
+uploaded_file = st.file_uploader(
+    "Upload a photo", type=["png", "jpg", "jpeg"], label_visibility="collapsed"
+)
 
-                # Use `out` (spill-decontaminated) for RGB, not the raw original — the raw
-                # pixels still carry a green tint at edges even where alpha is partial,
-                # which shows up as a green fringe once composited on any other background.
-                alpha_f = 1 - mask  # 0..1, foreground=1
-
-                # Decontamination alone still leaves a faint green rim on real photos
-                # (uneven studio lighting, anti-aliased edges in the source image).
-                # Instead of shrinking the silhouette (which loses shape on thin details),
-                # mark a "trusted core" a few pixels in from the edge as clean garment
-                # color, then grow that color outward to replace the green-tinted edge
-                # pixels — while keeping the ORIGINAL soft alpha, so the outline shape
-                # and antialiasing are preserved.
-                final_rgb = out
-                if erode_px > 0:
-                    fg_binary = (alpha_f > 0.5).astype(np.uint8)
-                    kernel = np.ones((3, 3), np.uint8)
-                    core = cv2.erode(fg_binary, kernel, iterations=erode_px)
-
-                    if core.any():
-                        # For every non-core pixel, find the nearest core pixel and
-                        # copy its color outward (nearest-neighbor color extension).
-                        _, indices = distance_transform_edt(1 - core, return_indices=True)
-                        grown_rgb = out[indices[0], indices[1]]
-                        final_rgb = np.where(core[..., None].astype(bool), out, grown_rgb)
-
-                alpha = np.uint8(np.clip(alpha_f, 0, 1) * 255)
-                rgba = np.dstack([final_rgb, alpha])
-                extracted_image = Image.fromarray(rgba.astype(np.uint8), "RGBA")
-
-                st.image(extracted_image, width="stretch")
-
-                buf = io.BytesIO()
-                extracted_image.save(buf, format="PNG")
-                byte_im = buf.getvalue()
-
-                st.download_button(
-                    label="Save PNG",
-                    data=byte_im,
-                    file_name="chromakey_cutout.png",
-                    mime="image/png",
-                    width="stretch",
-                )
-            except Exception as e:
-                st.error(f"Couldn't process this image: {e}")
-else:
+if uploaded_file is None:
     st.markdown(
-        '<p style="opacity:0.65; padding: 0 0.25rem;">Drop a green-screen photo above to get started.</p>',
+        '<p style="opacity:0.65; padding: 0 0.25rem;">Drop a garment photo above to get started.</p>',
         unsafe_allow_html=True,
     )
+    st.stop()
+
+image_bytes = uploaded_file.getvalue()
+original_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+img_array = np.array(original_image)
+
+st.sidebar.markdown('<div class="cw-sidebar-title">Extraction</div>', unsafe_allow_html=True)
+st.sidebar.markdown(
+    '<div class="cw-sidebar-sub">AI cutout reads the garment\'s shape. '
+    'Chroma key reads one background colour — only use it on a real green screen.</div>',
+    unsafe_allow_html=True,
+)
+method = st.sidebar.radio(
+    "Method",
+    ["AI cutout", "Chroma key"],
+    label_visibility="collapsed",
+    help="AI cutout handles studio backdrops, gradients and shadows. Chroma key is "
+         "instant and pixel-exact, but only on a background whose colour is far from "
+         "every colour in the garment.",
+)
+
+if method == "AI cutout":
+    model_label = st.sidebar.selectbox("Model", list(AI_MODELS), index=0)
+    model_name = AI_MODELS[model_label]
+    refine_edges = st.sidebar.checkbox(
+        "Refine edges (alpha matting)",
+        value=False,
+        help="Second pass that softens hard edges — better on fur, lace and loose "
+             "threads. Several times slower, and it can eat very thin details.",
+    )
+else:
+    detected_hex = detect_background_hex(img_array)
+    st.sidebar.markdown(
+        f'<div class="cw-sidebar-sub">Detected background: {detected_hex}</div>',
+        unsafe_allow_html=True,
+    )
+    key_color_hex = st.sidebar.color_picker("Background color", detected_hex)
+    tola = st.sidebar.slider(
+        "Solid background below (tola)", 1, 50, 10,
+        help="Colour distance from the key below which a pixel is treated as pure "
+             "background and removed completely.",
+    )
+    tolb = st.sidebar.slider(
+        "Solid garment above (tolb)", tola + 1, 120, 60,
+        help="Colour distance from the key above which a pixel is treated as pure "
+             "garment and kept completely. Between the two values alpha ramps, which "
+             "is what softens the edge.",
+    )
+    grow_px = st.sidebar.slider(
+        "Fringe removal strength", 0, 5, 2,
+        help="How many pixels in from the edge count as trusted garment colour. That "
+             "colour is grown back outward to replace spill-contaminated edge pixels. "
+             "Raise it if a coloured rim persists; lower it if fine details smear.",
+    )
+
+col1, col2 = st.columns(2)
+
+with col1:
+    st.markdown('<span class="cw-chip">Original</span>', unsafe_allow_html=True)
+    st.image(original_image, width="stretch")
+
+with col2:
+    st.markdown('<span class="cw-chip">Extracted</span>', unsafe_allow_html=True)
+    try:
+        if method == "AI cutout":
+            with st.spinner("Cutting out the garment… first run downloads the model (~170 MB)."):
+                extracted_image = Image.open(io.BytesIO(ai_cutout(image_bytes, model_name, refine_edges)))
+            note = f"{model_label.split(' — ')[0]}{', refined' if refine_edges else ''}"
+        else:
+            with st.spinner("Calculating chroma key…"):
+                extracted_image = chroma_cutout(img_array, key_color_hex, tola, tolb, grow_px)
+            note = f"chroma key on {key_color_hex}"
+
+        st.image(extracted_image, width="stretch")
+        st.caption(note)
+
+        buf = io.BytesIO()
+        extracted_image.save(buf, format="PNG")
+        st.download_button(
+            label="Save PNG",
+            data=buf.getvalue(),
+            file_name="cutout.png",
+            mime="image/png",
+            width="stretch",
+        )
+    except ModuleNotFoundError as exc:
+        st.error(
+            f"Missing dependency: {exc.name}. Add `rembg` and `onnxruntime` to "
+            "requirements.txt for the AI path, or switch to Chroma key."
+        )
+    except Exception as exc:  # noqa: BLE001 - surface anything else to the user
+        st.error(f"Couldn't process this image: {exc}")
