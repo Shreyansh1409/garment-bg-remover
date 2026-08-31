@@ -199,8 +199,9 @@ st.markdown(
 # BiRefNet is not offered: it was OOM-killed in an 8 GB container.
 # ---------------------------------------------------------------------------
 AI_MODELS = {
-    "u2netp — light and fast (default)": "u2netp",
-    "u2net — slightly cleaner, ~2x memory": "u2net",
+    "u2net_cloth_seg — garments only (removes skin)": "u2net_cloth_seg",
+    "u2netp — light and fast (general cutout)": "u2netp",
+    "u2net — slightly cleaner, ~2x memory (general cutout)": "u2net",
 }
 
 MAX_MASK_EDGE = 1024  # longest edge used for mask inference
