@@ -1,4 +1,5 @@
 streamlit
 numpy
 opencv-python-headless
+scipy
 git+https://github.com/eugeneteoh/chromakey.git
