@@ -12,7 +12,7 @@ st.write("Upload a green screen product photo to isolate the garment using chrom
 st.sidebar.header("Chroma Key Settings")
 key_color_hex = st.sidebar.color_picker("Pick your background color", "#00FF00")
 
-key_color_rgb = [int(key_color_hex.lstrip('#')[i:i+2], 16) for i in (0, 2, 4)]
+key_color_rgb = tuple(int(key_color_hex.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
 
 uploaded_file = st.file_uploader("Upload your green screen photo", type=["png", "jpg", "jpeg"])
 
@@ -22,7 +22,8 @@ if uploaded_file is not None:
     
     with col1:
         st.header("Original Image")
-        st.image(original_image, use_container_width=True)
+        # Updated to the new width parameter
+        st.image(original_image, width="stretch")
         
     with col2:
         st.header("Extracted Garment")
@@ -49,7 +50,8 @@ if uploaded_file is not None:
                     result_array = rgba
 
                 extracted_image = Image.fromarray(result_array.astype('uint8'), 'RGBA')
-                st.image(extracted_image, use_container_width=True)
+                # Updated to the new width parameter
+                st.image(extracted_image, width="stretch")
                 
                 buf = io.BytesIO()
                 extracted_image.save(buf, format="PNG")
@@ -60,7 +62,8 @@ if uploaded_file is not None:
                     data=byte_im,
                     file_name="chromakey_cutout.png",
                     mime="image/png",
-                    use_container_width=True
+                    # Updated to the new width parameter
+                    width="stretch"
                 )
             except Exception as e:
                 st.error(f"Error processing image: {e}")
