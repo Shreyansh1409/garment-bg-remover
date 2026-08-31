@@ -50,16 +50,20 @@ if uploaded_file is not None:
                 img_array = np.array(original_image)  # RGB, shape (H, W, 3)
 
                 # chroma_key() takes a hex string, returns (out, mask) — NOT a single RGBA array.
-                # out = RGB with the key color subtracted (can look dull/off-color at edges)
+                # out = RGB with the key color subtracted from every pixel in proportion to
+                #       the mask — this "decontaminates" green spill at semi-transparent
+                #       edges (anti-aliased pixels blended with the background in the
+                #       original photo). Fully-opaque interior pixels are unaffected.
                 # mask = float array, 1.0 = background, 0.0 = foreground
                 out, mask = chromakey.chroma_key(
                     img_array, key_color_hex, tola=tola, tolb=tolb
                 )
 
-                # Build alpha from the mask (invert: foreground = opaque) and composite
-                # onto the ORIGINAL pixels, not `out`, to avoid the color-subtracted look.
+                # Use `out` (spill-decontaminated) for RGB, not the raw original — the raw
+                # pixels still carry a green tint at edges even where alpha is partial,
+                # which shows up as a green fringe once composited on any other background.
                 alpha = np.uint8((1 - mask) * 255)
-                rgba = np.dstack([img_array, alpha])
+                rgba = np.dstack([out, alpha])
                 extracted_image = Image.fromarray(rgba, "RGBA")
 
                 st.image(extracted_image, width="stretch")
