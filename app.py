@@ -108,31 +108,21 @@ def hf_segformer_cutout(image_bytes: bytes, hf_token: str, grow_px: int) -> byte
     if not hf_token:
         raise ValueError("Hugging Face API Token is missing.")
         
-    # Initialize the official Hugging Face inference client for the clothing model
+    # Initialize official client routed to the Segformer clothing model
     client = InferenceClient(model="mattmdjaga/segformer_b2_clothes", token=hf_token)
     
-    # Send image bytes directly to the model using image-to-image or custom pipeline execution
-    # Note: image-segmentation tasks return a list of dictionaries containing labels and base64 masks
+    # Run serverless image segmentation via the official SDK
+    results = client.image_segmentation(image=image_bytes)
+    
     source_img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-    
-    # Using post request through the client session for image segmentation payload
-    API_URL = "https://router.huggingface.co/hf-inference/models/mattmdjaga/segformer_b2_clothes"
-    headers = {"Authorization": f"Bearer {hf_token}"}
-    
-    response = requests.post(API_URL, headers=headers, data=image_bytes)
-    response.raise_for_status()
-    result_json = response.json()
-    
-    if isinstance(result_json, dict) and "error" in result_json:
-        raise ValueError(f"Hugging Face API Error: {result_json['error']}")
-        
     target_labels = ["Upper-clothes", "Pants", "Skirt", "Dress", "Coat"]
     combined_mask = None
     
-    for item in result_json:
-        if item.get("label") in target_labels:
-            mask_data = base64.b64decode(item.get("mask"))
-            mask_img = Image.open(io.BytesIO(mask_data)).convert("L")
+    for item in results:
+        # Check standard label structures returned by InferenceClient
+        label = item.get("label", "")
+        if label in target_labels:
+            mask_img = item.get("mask").convert("L")
             mask_img = mask_img.resize(source_img.size, Image.LANCZOS)
             
             if combined_mask is None:
