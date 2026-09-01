@@ -229,7 +229,17 @@ image_bytes = uploaded_file.getvalue()
 original_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
 img_array = np.array(original_image)
 
+# 2. Sidebar renders after image is loaded
 with st.sidebar:
+    # --- ADD THIS STATE INITIALIZATION ---
+    if "fringe_val" not in st.session_state:
+        st.session_state.fringe_val = 0
+
+    def step_fringe(delta):
+        # Keeps the value strictly between 0 and 5
+        st.session_state.fringe_val = max(0, min(5, st.session_state.fringe_val + delta))
+    # -------------------------------------
+
     st.markdown('<div class="sidebar-header">Engine Settings</div>', unsafe_allow_html=True)
     method = st.radio("Processing Engine", ["AI Engine (Auto)", "Chroma Key (Studio Green)"], label_visibility="collapsed")
     
@@ -241,7 +251,15 @@ with st.sidebar:
         model_name = AI_MODELS[model_label]
         
         with st.expander("Edge Cleanup"):
-            grow_px = st.slider("Fringe Eraser (px)", 0, 5, 0, help="Shrinks the cutout mask to remove edge halos.")
+            st.markdown("<p style='font-size: 0.9rem; font-weight: 500; margin-bottom: 0;'>Fringe Eraser (px)</p>", unsafe_allow_html=True)
+            col_min, col_slide, col_plus = st.columns([1, 4, 1])
+            
+            with col_min:
+                st.button("−", on_click=step_fringe, args=(-1,), use_container_width=True, key="ai_minus")
+            with col_slide:
+                grow_px = st.slider("Fringe", 0, 5, key="fringe_val", label_visibility="collapsed")
+            with col_plus:
+                st.button("+", on_click=step_fringe, args=(1,), use_container_width=True, key="ai_plus")
             
     else:
         st.markdown('<div class="sidebar-header">Keying Parameters</div>', unsafe_allow_html=True)
@@ -251,8 +269,15 @@ with st.sidebar:
         tolb = st.slider("Tolerance B (Highlights)", tola + 1, 120, 60, help="Pixels beyond this distance are kept 100%.")
         
         with st.expander("Edge Cleanup"):
-            grow_px = st.slider("Fringe Eraser (px)", 0, 5, 2)
-
+            st.markdown("<p style='font-size: 0.9rem; font-weight: 500; margin-bottom: 0;'>Fringe Eraser (px)</p>", unsafe_allow_html=True)
+            col_min, col_slide, col_plus = st.columns([1, 4, 1])
+            
+            with col_min:
+                st.button("−", on_click=step_fringe, args=(-1,), use_container_width=True, key="chroma_minus")
+            with col_slide:
+                grow_px = st.slider("Fringe", 0, 5, key="fringe_val", label_visibility="collapsed")
+            with col_plus:
+                st.button("+", on_click=step_fringe, args=(1,), use_container_width=True, key="chroma_plus")
 
 # 3. Process & Render Result
 col1, col2 = st.columns(2, gap="large")
