@@ -171,7 +171,7 @@ def load_ai_session(model_name: str):
 
 
 @st.cache_data(show_spinner=False, max_entries=4)
-def ai_cutout(image_bytes: bytes, model_name: str) -> bytes:
+def ai_cutout(image_bytes: bytes, model_name: str, grow_px: int) -> bytes:
     from rembg import remove
 
     source = Image.open(io.BytesIO(image_bytes)).convert("RGB")
@@ -183,9 +183,19 @@ def ai_cutout(image_bytes: bytes, model_name: str) -> bytes:
     
     channels = raw_mask.split()
     mask = channels[-1] if len(channels) == 4 else raw_mask.convert("L")
+    
+    # Resize mask up to full resolution first
+    mask = mask.resize(source.size, Image.LANCZOS)
+
+    # --- Fringe Removal (Erosion) for AI ---
+    if grow_px > 0:
+        mask_arr = np.array(mask)
+        kernel = np.ones((3, 3), np.uint8)
+        mask_arr = cv2.erode(mask_arr, kernel, iterations=grow_px)
+        mask = Image.fromarray(mask_arr)
 
     result = source.convert("RGBA")
-    result.putalpha(mask.resize(source.size, Image.LANCZOS))
+    result.putalpha(mask)
 
     buf = io.BytesIO()
     result.save(buf, format="PNG")
@@ -286,6 +296,8 @@ if method == "AI cutout":
     model_label = st.sidebar.selectbox("Model", list(AI_MODELS), index=0)
     model_name = AI_MODELS[model_label]
     
+    grow_px = st.sidebar.slider("Fringe removal strength", 0, 5, 0)
+    
     st.sidebar.markdown(
         '<div class="cw-sidebar-sub" style="margin-top:0.6rem;">Runs single-threaded '
         'with the ONNX memory arena off, and masks at 1024&nbsp;px, to hold steady '
@@ -314,7 +326,7 @@ with col2:
     try:
         if method == "AI cutout":
             with st.spinner("Cutting out the garment… the first run downloads the model."):
-                extracted_image = Image.open(io.BytesIO(ai_cutout(image_bytes, model_name)))
+                extracted_image = Image.open(io.BytesIO(ai_cutout(image_bytes, model_name, grow_px)))
             note = model_label.split(" — ")[0]
         else:
             with st.spinner("Calculating chroma key…"):
