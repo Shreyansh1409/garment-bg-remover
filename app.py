@@ -223,6 +223,21 @@ def chroma_cutout(img_array: np.ndarray, key_hex: str, tola: int, tolb: int, gro
     alpha_f = 1.0 - mask
     final_rgb = img_array.copy()
 
+    # --- SPILL SUPPRESSION (Color Decontamination) ---
+    # Target semi-transparent edge pixels
+    edge_mask = (alpha_f > 0.05) & (alpha_f < 0.95)
+    
+    # If the chosen background color is green-dominant (G > R and G > B)
+    if target_color[1] > target_color[0] and target_color[1] > target_color[2]:
+        r = final_rgb[:,:,0].astype(np.float32)
+        g = final_rgb[:,:,1].astype(np.float32)
+        b = final_rgb[:,:,2].astype(np.float32)
+        
+        # Limit the green channel to the average of red and blue on the edges
+        max_green = (r + b) / 2
+        suppressed_g = np.where(edge_mask & (g > max_green), max_green, g)
+        final_rgb[:,:,1] = suppressed_g.astype(np.uint8)
+
     # Fringe removal (erosion & distance transform)
     if grow_px > 0:
         fg_binary = (alpha_f > 0.5).astype(np.uint8)
