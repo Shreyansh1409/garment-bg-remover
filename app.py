@@ -150,6 +150,7 @@ def ai_cutout(image_bytes: bytes, model_name: str, grow_px: int) -> bytes:
         rgb_mask = raw_mask.convert("RGB")
         r, g, b = rgb_mask.split()
         
+        # Red = Upper Clothes, Green = Lower Clothes. Drops the Blue skin channel.
         clothes_only = np.maximum(np.array(r), np.array(g))
         mask = Image.fromarray(clothes_only).convert("L")
     else:
@@ -250,16 +251,6 @@ with st.sidebar:
         st.markdown('<div class="sidebar-header">AI Parameters</div>', unsafe_allow_html=True)
         model_label = st.selectbox("Model Tier", list(AI_MODELS), index=0)
         model_name = AI_MODELS[model_label]
-        
-        with st.expander("Edge Cleanup", expanded=True):
-            st.markdown("<p style='font-size: 0.9rem; font-weight: 500; margin-bottom: 0;'>Fringe Eraser (px)</p>", unsafe_allow_html=True)
-            col_min, col_slide, col_plus = st.columns([1, 4, 1])
-            with col_min:
-                st.button("−", on_click=step_fringe, args=(-1,), use_container_width=True, key="ai_minus")
-            with col_slide:
-                grow_px = st.slider("Fringe", 0, 5, key="fringe_val", label_visibility="collapsed")
-            with col_plus:
-                st.button("+", on_click=step_fringe, args=(1,), use_container_width=True, key="ai_plus")
             
     elif method == "Chroma Key (Studio Green)":
         st.warning("⚠️ **Best for solid backdrops only.** Relies on strict color contrast. Fails on complex backgrounds or shadows.")
@@ -268,16 +259,6 @@ with st.sidebar:
         key_color_hex = st.color_picker("Key Color", detected_hex)
         tola = st.slider("Tolerance A (Shadows)", 1, 50, 10)
         tolb = st.slider("Tolerance B (Highlights)", tola + 1, 120, 60)
-        
-        with st.expander("Edge Cleanup", expanded=True):
-            st.markdown("<p style='font-size: 0.9rem; font-weight: 500; margin-bottom: 0;'>Fringe Eraser (px)</p>", unsafe_allow_html=True)
-            col_min, col_slide, col_plus = st.columns([1, 4, 1])
-            with col_min:
-                st.button("−", on_click=step_fringe, args=(-1,), use_container_width=True, key="chroma_minus")
-            with col_slide:
-                grow_px = st.slider("Fringe", 0, 5, key="fringe_val", label_visibility="collapsed")
-            with col_plus:
-                st.button("+", on_click=step_fringe, args=(1,), use_container_width=True, key="chroma_plus")
                 
     elif method == "Hybrid (AI + Chroma)":
         st.info("⚡ **Best for perfect green screens.** Combines AI shape detection with strict color math to punch out enclosed gaps.")
@@ -290,15 +271,16 @@ with st.sidebar:
         tola = st.slider("Tolerance A (Shadows)", 1, 50, 10)
         tolb = st.slider("Tolerance B (Highlights)", tola + 1, 120, 60)
         
-        with st.expander("Edge Cleanup", expanded=True):
-            st.markdown("<p style='font-size: 0.9rem; font-weight: 500; margin-bottom: 0;'>Fringe Eraser (px)</p>", unsafe_allow_html=True)
-            col_min, col_slide, col_plus = st.columns([1, 4, 1])
-            with col_min:
-                st.button("−", on_click=step_fringe, args=(-1,), use_container_width=True, key="hyb_minus")
-            with col_slide:
-                grow_px = st.slider("Fringe", 0, 5, key="fringe_val", label_visibility="collapsed")
-            with col_plus:
-                st.button("+", on_click=step_fringe, args=(1,), use_container_width=True, key="hyb_plus")
+    # Defined strictly ONCE to prevent DuplicateWidgetID crashes
+    with st.expander("Edge Cleanup", expanded=True):
+        st.markdown("<p style='font-size: 0.9rem; font-weight: 500; margin-bottom: 0;'>Fringe Eraser (px)</p>", unsafe_allow_html=True)
+        col_min, col_slide, col_plus = st.columns([1, 4, 1])
+        with col_min:
+            st.button("−", on_click=step_fringe, args=(-1,), use_container_width=True, key="btn_minus")
+        with col_slide:
+            grow_px = st.slider("Fringe", 0, 5, key="fringe_val", label_visibility="collapsed")
+        with col_plus:
+            st.button("+", on_click=step_fringe, args=(1,), use_container_width=True, key="btn_plus")
 
 
 # 3. Process & Render Result
