@@ -1,7 +1,8 @@
 streamlit
-Pillow
 numpy
-scipy
+pillow
 opencv-python-headless
+scipy
 rembg
 onnxruntime
+git+https://github.com/eugeneteoh/chromakey.git
