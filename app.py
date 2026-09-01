@@ -272,7 +272,7 @@ with col1:
         </div>
         """, unsafe_allow_html=True
     )
-    st.image(original_image, use_column_width=True)
+    st.image(original_image, use_container_width=True)
 
 with col2:
     st.markdown(
@@ -291,7 +291,7 @@ with col2:
             with st.spinner("🟩 Applying color math..."):
                 extracted_image = chroma_cutout(img_array, key_color_hex, tola, tolb, grow_px)
 
-        st.image(extracted_image, use_column_width=True)
+        st.image(extracted_image, use_container_width=True)
         
         buf = io.BytesIO()
         extracted_image.save(buf, format="PNG")
