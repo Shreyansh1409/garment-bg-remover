@@ -8,4 +8,4 @@ onnxruntime
 transformers
 torch
 torchvision
-diffusers
+requests
