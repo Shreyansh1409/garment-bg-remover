@@ -1,39 +1,13 @@
 import io
+import os
+import base64
+import requests
+
 import cv2
 import numpy as np
 import streamlit as st
 from PIL import Image
 from scipy.ndimage import distance_transform_edt
-
-import torch
-from diffusers import AutoPipelineForInpainting
-from diffusers.utils import load_image
-
-# 1. Load the model directly to your Mac's GPU (MPS) or fallback to CPU
-device = "mps" if torch.backends.mps.is_available() else "cpu"
-pipeline = AutoPipelineForInpainting.from_pretrained(
-    "runwayml/stable-diffusion-inpainting", 
-    torch_dtype=torch.float16 if device == "mps" else torch.float32
-).to(device)
-
-# 2. Load the exported assets from your Streamlit app
-init_image = load_image("product_asset.png").convert("RGB")
-mask_image = load_image("occlusion_mask.png").convert("RGB")
-
-# 3. Hallucinate the missing fabric
-prompt = "seamless continuous fabric, high quality clothing flat lay"
-negative_prompt = "skin, hair, hands, fingers, human body, artifacts, ugly"
-
-result = pipeline(
-    prompt=prompt,
-    negative_prompt=negative_prompt,
-    image=init_image,
-    mask_image=mask_image,
-    guidance_scale=7.5,
-    strength=0.99  # 0.99 forces maximum hallucination inside the mask
-).images[0]
-
-result.save("reconstructed_garment.png")
 
 # ---------------------------------------------------------------------------
 # App Configuration & Callbacks
@@ -147,7 +121,7 @@ def local_segformer_cutout(image_bytes: bytes, grow_px: int):
     if grow_px > 0:
         kernel = np.ones((3, 3), np.uint8)
         garment_arr = cv2.erode(garment_arr, kernel, iterations=grow_px)
-        occlusion_arr = cv2.dilate(occlusion_arr, kernel, iterations=grow_px) # Dilate mask for better inpaint blending
+        occlusion_arr = cv2.dilate(occlusion_arr, kernel, iterations=grow_px) 
         
     garment_mask = Image.fromarray(garment_arr, mode="L")
     inpaint_mask = Image.fromarray(occlusion_arr, mode="L")
@@ -162,6 +136,28 @@ def local_segformer_cutout(image_bytes: bytes, grow_px: int):
     inpaint_mask.save(mask_buf, format="PNG")
     
     return garment_buf.getvalue(), mask_buf.getvalue()
+
+# ---------------------------------------------------------------------------
+# Cloud Inpainting API Engine
+# ---------------------------------------------------------------------------
+def api_inpaint_fabric(garment_bytes: bytes, mask_bytes: bytes, token: str) -> bytes:
+    API_URL = "https://api-inference.huggingface.co/models/runwayml/stable-diffusion-inpainting"
+    headers = {"Authorization": f"Bearer {token}"}
+    
+    payload = {
+        "inputs": "seamless continuous fabric, high quality clothing flat lay",
+        "image": base64.b64encode(garment_bytes).decode('utf-8'),
+        "mask_image": base64.b64encode(mask_bytes).decode('utf-8'),
+        "parameters": {
+            "negative_prompt": "skin, hair, hands, fingers, human body, biological artifacts",
+            "guidance_scale": 7.5,
+            "strength": 0.99
+        }
+    }
+    
+    response = requests.post(API_URL, headers=headers, json=payload)
+    response.raise_for_status()
+    return response.content
 
 # ---------------------------------------------------------------------------
 # Local AI (rembg) Engine
@@ -295,7 +291,10 @@ with st.sidebar:
     st.markdown("---")
     
     if method == "Segformer (Pro Garment AI)":
-        st.info("🚀 **State-of-the-Art Clothing AI.** Uses an advanced PyTorch transformer to accurately map garment classes locally while strictly ignoring skin and backgrounds. Generates an inpainting mask for occlusion zones.")
+        st.info("🚀 **State-of-the-Art Clothing AI.** Extracts garments locally, then leverages the cloud to reconstruct holes caused by hair/arm occlusion.")
+        st.markdown('<div class="sidebar-header">API Configuration</div>', unsafe_allow_html=True)
+        auto_token = st.secrets.get("HUGGINGFACE_TOKEN", os.getenv("HUGGINGFACE_TOKEN", ""))
+        hf_token = st.text_input("Hugging Face API Token", value=auto_token, type="password")
         
     elif method == "Local AI (Basic & Full Subject)":
         st.info("💡 **Basic Model.** Extracts the general silhouette perfectly. Struggles with internal specific garments.")
@@ -336,40 +335,43 @@ col1, col2 = st.columns(2, gap="large")
 
 with col1:
     st.markdown('<div class="image-card-title">Source Image</div>', unsafe_allow_html=True)
-    st.image(original_image, width="stretch")
+    st.image(original_image, use_container_width=True)
 
 with col2:
     st.markdown('<div class="image-card-title">Extraction Result</div>', unsafe_allow_html=True)
     
     try:
         if method == "Segformer (Pro Garment AI)":
-            with st.spinner("🧠 Running Segformer (Local PyTorch)..."):
+            with st.spinner("🧠 Extracting garment and occlusion zones (Local)..."):
                 garment_bytes, mask_bytes = local_segformer_cutout(image_bytes, grow_px)
                 extracted_image = Image.open(io.BytesIO(garment_bytes))
-                inpaint_mask = Image.open(io.BytesIO(mask_bytes))
                 
-            st.image(extracted_image, width="stretch")
-            
-            st.download_button(
-                label="↓ Export Transparent Asset (PNG)",
-                data=garment_bytes,
-                file_name="product_asset.png",
-                mime="image/png",
-                width="stretch"
-            )
+            st.image(extracted_image, use_container_width=True)
             
             st.markdown("---")
-            st.markdown('<div class="image-card-title" style="margin-top:1rem;">Generative Inpainting Data</div>', unsafe_allow_html=True)
-            st.info("Pipe this occlusion mask into an inpainting model to hallucinate the missing fabric.")
-            st.image(inpaint_mask, width="stretch")
-            st.download_button(
-                label="↓ Export Inpainting Mask (PNG)",
-                data=mask_bytes,
-                file_name="occlusion_mask.png",
-                mime="image/png",
-                width="stretch"
-            )
+            st.markdown('<div class="image-card-title">AI Generative Reconstruction</div>', unsafe_allow_html=True)
+            st.info("The extracted garment has transparent holes from pixel occlusion (hair/arms). Send it to the cloud to hallucinate the missing fabric.")
             
+            if st.button("✨ Reconstruct Missing Fabric", use_container_width=True):
+                if not hf_token:
+                    st.warning("⚠️ Please enter your API Token in the sidebar.")
+                else:
+                    with st.spinner("☁️ Hallucinating missing fabric via Cloud API..."):
+                        try:
+                            reconstructed_bytes = api_inpaint_fabric(garment_bytes, mask_bytes, hf_token)
+                            final_image = Image.open(io.BytesIO(reconstructed_bytes))
+                            st.image(final_image, use_container_width=True)
+                            
+                            st.download_button(
+                                label="↓ Export Final Reconstructed Asset",
+                                data=reconstructed_bytes,
+                                file_name="final_garment.png",
+                                mime="image/png",
+                                use_container_width=True
+                            )
+                        except Exception as e:
+                            st.error(f"**API Error:** The remote server rejected the payload or timed out. {e}")
+                            
         else:
             with st.spinner("Processing..."):
                 if method == "Local AI (Basic & Full Subject)":
@@ -386,7 +388,7 @@ with col2:
                     extracted_image = chroma_img.copy()
                     extracted_image.putalpha(Image.fromarray(combined_alpha))
                     
-            st.image(extracted_image, width="stretch")
+            st.image(extracted_image, use_container_width=True)
             buf = io.BytesIO()
             extracted_image.save(buf, format="PNG")
             st.download_button(
@@ -394,7 +396,7 @@ with col2:
                 data=buf.getvalue(),
                 file_name="product_asset.png",
                 mime="image/png",
-                width="stretch"
+                use_container_width=True
             )
             
     except ModuleNotFoundError as exc:
