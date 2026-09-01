@@ -1,11 +1,8 @@
 streamlit
-opencv-python-headless
 numpy
-Pillow
+pillow
+opencv-python-headless
 scipy
 rembg
 onnxruntime
-transformers
-torch
-torchvision
-requests
+git+https://github.com/eugeneteoh/chromakey.git
