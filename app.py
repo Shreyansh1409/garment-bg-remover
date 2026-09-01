@@ -103,11 +103,13 @@ st.markdown(
 # Segformer API Logic
 # ---------------------------------------------------------------------------
 def hf_segformer_cutout(image_bytes: bytes, hf_token: str, grow_px: int) -> bytes:
-    API_URL = "https://api-inference.huggingface.co/models/mattmdjaga/segformer_b2_clothes"
+    # Updated to the current Hugging Face router endpoint
+    API_URL = "https://router.huggingface.co/hf-inference/models/mattmdjaga/segformer_b2_clothes"
     headers = {"Authorization": f"Bearer {hf_token}"}
     
     response = requests.post(API_URL, headers=headers, data=image_bytes)
     response.raise_for_status()
+    
     
     result_json = response.json()
     if isinstance(result_json, dict) and "error" in result_json:
