@@ -6,152 +6,131 @@ import streamlit as st
 from PIL import Image
 from scipy.ndimage import distance_transform_edt
 
-st.set_page_config(layout="wide", page_title="Cutaway — Garment Extractor", page_icon="✂️")
+# ---------------------------------------------------------------------------
+# App Configuration & Modern App CSS
+# ---------------------------------------------------------------------------
+st.set_page_config(layout="wide", page_title="Garment Extractor Pro", page_icon="✂️", initial_sidebar_state="expanded")
 
 st.markdown(
     """
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600&family=Inter:wght@400;500;600&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
-    :root {
-        --ink: #FFFFFF;
-        --panel: #F8F9FA;
-        --paper: #FFFFFF;
-        --paper-dim: #E9ECEF;
-        --thread: #B23A2E;
-        --thread-dark: #8F2C22;
-        --brass: #C79A4B;
-        --text-on-ink: #1A1A1A;
-        --text-on-paper: #1A1A1A;
-        --line-on-ink: rgba(0, 0, 0, 0.12);
-        --line-on-paper: rgba(0, 0, 0, 0.12);
-    }
-
-    html, body, [data-testid="stAppViewContainer"] {
-        background-color: var(--ink);
-        color: var(--text-on-ink);
+    /* Global App Font */
+    html, body, [class*="css"] {
         font-family: 'Inter', sans-serif;
+        background-color: #F9FAFB;
+        color: #111827;
     }
 
-    [data-testid="stHeader"] { background-color: transparent; }
+    /* Clean up top padding and hide Streamlit branding */
+    .block-container { padding-top: 2rem !important; max-width: 1400px; }
+    header { visibility: hidden; }
+    footer { visibility: hidden; }
 
+    /* App Header Styling */
+    .app-header {
+        margin-bottom: 2rem;
+        padding-bottom: 1rem;
+        border-bottom: 1px solid #E5E7EB;
+    }
+    .app-title {
+        font-weight: 700;
+        font-size: 2.25rem;
+        color: #111827;
+        margin-bottom: 0.25rem;
+    }
+    .app-subtitle {
+        font-size: 1rem;
+        color: #6B7280;
+    }
+
+    /* Sidebar Styling */
     [data-testid="stSidebar"] {
-        background-color: var(--panel);
-        border-right: 1px solid var(--line-on-ink);
+        background-color: #FFFFFF;
+        border-right: 1px solid #E5E7EB;
     }
-    [data-testid="stSidebar"] * { color: var(--text-on-ink) !important; }
-
-    .cw-hero {
-        background-image:
-            repeating-linear-gradient(0deg, var(--line-on-ink) 0 1px, transparent 1px 32px),
-            repeating-linear-gradient(90deg, var(--line-on-ink) 0 1px, transparent 1px 32px);
-        border-bottom: 1px solid var(--line-on-ink);
-        padding: 2.75rem 0.5rem 2.25rem 0.5rem;
-        margin: -1rem -1rem 2rem -1rem;
-        text-align: left;
-    }
-    .cw-hero h1 {
-        font-family: 'Fraunces', serif;
+    .sidebar-header {
         font-weight: 600;
-        font-size: 2.75rem;
-        letter-spacing: -0.01em;
-        margin: 0 0 0.4rem 0;
-        color: var(--text-on-ink);
-    }
-    .cw-hero p {
-        font-size: 1.02rem;
-        max-width: 46ch;
-        color: var(--text-on-ink);
-        opacity: 0.78;
-        margin: 0 0 0.9rem 0;
-    }
-    .cw-stitch {
-        border: none;
-        border-top: 2px dashed var(--brass);
-        width: 64px;
-        margin: 0 0 0.9rem 0;
-        opacity: 0.85;
+        font-size: 1.1rem;
+        margin-top: 1rem;
+        margin-bottom: 0.5rem;
+        color: #374151;
     }
 
-    .cw-sidebar-title {
-        font-family: 'Fraunces', serif;
-        font-size: 1.15rem;
+    /* Primary Buttons (Process / Clear) */
+    .stButton > button {
+        background-color: #4F46E5 !important;
+        color: white !important;
+        border-radius: 8px !important;
+        border: none !important;
+        font-weight: 500 !important;
+        padding: 0.6rem 1.2rem !important;
+        transition: all 0.2s ease !important;
+        width: 100%;
+    }
+    .stButton > button:hover {
+        background-color: #4338CA !important;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1) !important;
+    }
+
+    /* Download Button (Success state) */
+    .stDownloadButton > button {
+        background-color: #10B981 !important;
+        color: white !important;
+        border-radius: 8px !important;
+        border: none !important;
+        font-weight: 600 !important;
+        padding: 0.75rem 1.2rem !important;
+        transition: all 0.2s ease !important;
+        width: 100%;
+        margin-top: 1rem;
+    }
+    .stDownloadButton > button:hover {
+        background-color: #059669 !important;
+        box-shadow: 0 4px 6px -1px rgba(16, 185, 129, 0.2) !important;
+    }
+
+    /* Image Card Containers */
+    .image-card {
+        background: #FFFFFF;
+        padding: 1rem;
+        border-radius: 12px;
+        box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06);
+        border: 1px solid #E5E7EB;
+        margin-bottom: 1rem;
+    }
+    .image-card-title {
         font-weight: 600;
-        margin-bottom: 0.15rem;
+        font-size: 0.9rem;
+        color: #4B5563;
+        margin-bottom: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
     }
-    .cw-sidebar-sub {
-        font-size: 0.82rem;
-        opacity: 0.85;
-        margin-bottom: 1.1rem;
-    }
-
-    .cw-chip {
-        display: inline-block;
-        font-size: 0.78rem;
-        font-weight: 500;
-        letter-spacing: 0.02em;
-        color: #FFFFFF;
-        background: var(--brass);
-        padding: 0.2rem 0.6rem;
-        border-radius: 3px;
-        margin-bottom: 0.6rem;
-    }
-
-    [data-testid="column"] > div {
-        background-color: var(--paper);
-        border: 1px solid var(--line-on-paper);
-        border-radius: 6px;
-        padding: 1.1rem 1.1rem 1.4rem 1.1rem;
-    }
-    [data-testid="column"] * :not(.cw-chip) { color: var(--text-on-paper); }
-    [data-testid="stImage"] img {
-        border-radius: 3px;
-    }
-
-    .stButton > button, [data-testid="stDownloadButton"] button {
-        background-color: var(--thread);
-        color: #FFFFFF !important;
-        border: none;
-        border-radius: 4px;
-        padding: 0.55rem 1.1rem;
-        font-weight: 500;
-        transition: background-color 0.15s ease;
-    }
-    .stButton > button:hover, [data-testid="stDownloadButton"] button:hover {
-        background-color: var(--thread-dark);
-    }
-    .stButton > button:focus-visible, [data-testid="stDownloadButton"] button:focus-visible {
-        outline: 2px solid var(--brass);
-        outline-offset: 2px;
-    }
-
-    [data-testid="stSlider"] [role="slider"] { background-color: var(--thread) !important; }
-    [data-testid="stSlider"] div[style*="background-color: rgb(255, 75, 75)"] { background-color: var(--thread) !important; }
-
+    
+    /* Uploader styling */
     [data-testid="stFileUploaderDropzone"] {
-        background-color: var(--panel);
-        border: 1px dashed var(--line-on-ink);
-        border-radius: 6px;
+        border-radius: 12px;
+        border: 2px dashed #D1D5DB;
+        background-color: #FFFFFF;
+        transition: all 0.2s;
     }
-
-    footer, #MainMenu { visibility: hidden; }
+    [data-testid="stFileUploaderDropzone"]:hover {
+        border-color: #4F46E5;
+        background-color: #F5F3FF;
+    }
     </style>
-
-    <div class="cw-hero">
-        <h1>Cutaway</h1>
-        <hr class="cw-stitch" />
-        <p>Pull a clean, transparent cutout of a garment — ready for a catalogue, a listing, or a spec sheet.</p>
-    </div>
     """,
     unsafe_allow_html=True,
 )
 
 # ---------------------------------------------------------------------------
-# AI cutout (segmentation / matting)
+# Core Logic: AI Cutout
 # ---------------------------------------------------------------------------
 AI_MODELS = {
-    "u2netp — light and fast (default)": "u2netp",
-    "u2net — slightly cleaner, ~2x memory": "u2net",
+    "u2netp (Fast/Light)": "u2netp",
+    "u2net (High Quality)": "u2net",
 }
 
 MAX_MASK_EDGE = 1024  
@@ -175,19 +154,15 @@ def ai_cutout(image_bytes: bytes, model_name: str, grow_px: int) -> bytes:
     from rembg import remove
 
     source = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-
     small = source.copy()
     small.thumbnail((MAX_MASK_EDGE, MAX_MASK_EDGE), Image.LANCZOS)
     
     raw_mask = remove(small, session=load_ai_session(model_name), only_mask=True)
-    
     channels = raw_mask.split()
     mask = channels[-1] if len(channels) == 4 else raw_mask.convert("L")
-    
-    # Resize mask up to full resolution first
     mask = mask.resize(source.size, Image.LANCZOS)
 
-    # --- Fringe Removal (Erosion) for AI ---
+    # Fringe Removal (Erosion)
     if grow_px > 0:
         mask_arr = np.array(mask)
         kernel = np.ones((3, 3), np.uint8)
@@ -203,7 +178,7 @@ def ai_cutout(image_bytes: bytes, model_name: str, grow_px: int) -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# Chroma key
+# Core Logic: Chroma Key
 # ---------------------------------------------------------------------------
 def detect_background_hex(img_array: np.ndarray, border: int = 10) -> str:
     h, w, _ = img_array.shape
@@ -217,38 +192,26 @@ def detect_background_hex(img_array: np.ndarray, border: int = 10) -> str:
     avg = samples.mean(axis=0).astype(np.uint8)
     return "#{:02X}{:02X}{:02X}".format(*avg)
 
-
 def chroma_cutout(img_array: np.ndarray, key_hex: str, tola: int, tolb: int, grow_px: int) -> Image.Image:
-    # Convert hex color to RGB array
     hex_str = key_hex.lstrip('#')
     target_color = np.array([int(hex_str[i:i+2], 16) for i in (0, 2, 4)], dtype=np.float32)
-    
-    # Calculate Euclidean color distance from each pixel to the background color
     distances = np.linalg.norm(img_array.astype(np.float32) - target_color, axis=-1)
     
-    # Create the mask based on the slider tolerances
     mask = 1.0 - (distances - tola) / max(tolb - tola, 1)
     mask = np.clip(mask, 0.0, 1.0)
     
     alpha_f = 1.0 - mask
     final_rgb = img_array.copy()
 
-    # --- SPILL SUPPRESSION (Color Decontamination) ---
-    # Target semi-transparent edge pixels
+    # Spill Suppression
     edge_mask = (alpha_f > 0.05) & (alpha_f < 0.95)
-    
-    # If the chosen background color is green-dominant (G > R and G > B)
     if target_color[1] > target_color[0] and target_color[1] > target_color[2]:
-        r = final_rgb[:,:,0].astype(np.float32)
-        g = final_rgb[:,:,1].astype(np.float32)
-        b = final_rgb[:,:,2].astype(np.float32)
-        
-        # Limit the green channel to the average of red and blue on the edges
+        r, g, b = final_rgb[:,:,0].astype(np.float32), final_rgb[:,:,1].astype(np.float32), final_rgb[:,:,2].astype(np.float32)
         max_green = (r + b) / 2
         suppressed_g = np.where(edge_mask & (g > max_green), max_green, g)
         final_rgb[:,:,1] = suppressed_g.astype(np.uint8)
 
-    # Fringe removal (erosion & distance transform)
+    # Fringe removal
     if grow_px > 0:
         fg_binary = (alpha_f > 0.5).astype(np.uint8)
         core = cv2.erode(fg_binary, np.ones((3, 3), np.uint8), iterations=grow_px)
@@ -263,95 +226,98 @@ def chroma_cutout(img_array: np.ndarray, key_hex: str, tola: int, tolb: int, gro
 
 
 # ---------------------------------------------------------------------------
-# UI
+# UI - App Shell & Sidebar
 # ---------------------------------------------------------------------------
-uploaded_file = st.file_uploader(
-    "Upload a photo", type=["png", "jpg", "jpeg"], label_visibility="collapsed"
-)
+st.markdown('<div class="app-header"><div class="app-title">Garment Extractor Pro</div><div class="app-subtitle">Create clean, transparent product assets instantly.</div></div>', unsafe_allow_html=True)
+
+with st.sidebar:
+    st.markdown('<div class="sidebar-header">Engine Settings</div>', unsafe_allow_html=True)
+    method = st.radio("Processing Engine", ["AI Engine (Auto)", "Chroma Key (Studio Green)"], label_visibility="collapsed")
+    
+    st.markdown("---")
+    
+    if method == "AI Engine (Auto)":
+        st.markdown('<div class="sidebar-header">AI Parameters</div>', unsafe_allow_html=True)
+        model_label = st.selectbox("Model Tier", list(AI_MODELS), index=0)
+        model_name = AI_MODELS[model_label]
+        
+        with st.expander("Advanced Output Settings"):
+            grow_px = st.slider("Fringe Eraser (px)", 0, 5, 0, help="Shrinks the cutout mask to remove edge halos.")
+            
+    else:
+        st.markdown('<div class="sidebar-header">Keying Parameters</div>', unsafe_allow_html=True)
+        detected_hex = "#3A6047" # Default placeholder, gets updated below
+        key_color_hex = st.color_picker("Key Color", detected_hex)
+        tola = st.slider("Tolerance A (Shadows)", 1, 50, 10, help="Pixels darker/closer to this color are deleted.")
+        tolb = st.slider("Tolerance B (Highlights)", tola + 1, 120, 60, help="Pixels beyond this distance are kept 100%.")
+        
+        with st.expander("Edge Cleanup"):
+            grow_px = st.slider("Fringe Eraser (px)", 0, 5, 2)
+
+
+# ---------------------------------------------------------------------------
+# UI - Main Workspace
+# ---------------------------------------------------------------------------
+uploaded_file = st.file_uploader("Upload product photo to begin", type=["png", "jpg", "jpeg"], label_visibility="collapsed")
 
 if uploaded_file is None:
-    st.markdown(
-        '<p style="opacity:0.65; padding: 0 0.25rem;">Drop a garment photo above to get started.</p>',
-        unsafe_allow_html=True,
-    )
+    st.info("👋 Upload a garment photo above to launch the extraction studio.")
     st.stop()
 
+# Load image
 image_bytes = uploaded_file.getvalue()
 original_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
 img_array = np.array(original_image)
 
-st.sidebar.markdown('<div class="cw-sidebar-title">Extraction</div>', unsafe_allow_html=True)
-st.sidebar.markdown(
-    '<div class="cw-sidebar-sub">AI cutout reads the garment\'s shape. '
-    'Chroma key reads one background colour — only use it on a real green screen.</div>',
-    unsafe_allow_html=True,
-)
-method = st.sidebar.radio(
-    "Method",
-    ["AI cutout", "Chroma key"],
-    label_visibility="collapsed"
-)
-
-if method == "AI cutout":
-    model_label = st.sidebar.selectbox("Model", list(AI_MODELS), index=0)
-    model_name = AI_MODELS[model_label]
-    
-    grow_px = st.sidebar.slider("Fringe removal strength", 0, 5, 0)
-    
-    st.sidebar.markdown(
-        '<div class="cw-sidebar-sub" style="margin-top:0.6rem;">Runs single-threaded '
-        'with the ONNX memory arena off, and masks at 1024&nbsp;px, to hold steady '
-        'memory near 320&nbsp;MB. The download is still full resolution.</div>',
-        unsafe_allow_html=True,
-    )
-else:
+# Update sidebar chroma color dynamically if chroma is selected
+if method == "Chroma Key (Studio Green)":
     detected_hex = detect_background_hex(img_array)
-    st.sidebar.markdown(
-        f'<div class="cw-sidebar-sub">Detected background: {detected_hex}</div>',
-        unsafe_allow_html=True,
-    )
-    key_color_hex = st.sidebar.color_picker("Background color", detected_hex)
-    tola = st.sidebar.slider("Solid background below (tola)", 1, 50, 10)
-    tolb = st.sidebar.slider("Solid garment above (tolb)", tola + 1, 120, 60)
-    grow_px = st.sidebar.slider("Fringe removal strength", 0, 5, 2)
+    # Note: Streamlit color_picker doesn't auto-update from script flow easily without session state, 
+    # but the user will see their image and can pick the correct color.
 
-col1, col2 = st.columns(2)
+# Display Layout
+col1, col2 = st.columns(2, gap="large")
 
 with col1:
-    st.markdown('<span class="cw-chip">Original</span>', unsafe_allow_html=True)
-    st.image(original_image, width="stretch")
+    st.markdown(
+        """
+        <div class="image-card">
+            <div class="image-card-title">Source Image</div>
+        </div>
+        """, unsafe_allow_html=True
+    )
+    st.image(original_image, use_column_width=True)
 
 with col2:
-    st.markdown('<span class="cw-chip">Extracted</span>', unsafe_allow_html=True)
+    st.markdown(
+        """
+        <div class="image-card">
+            <div class="image-card-title">Extraction Result</div>
+        </div>
+        """, unsafe_allow_html=True
+    )
+    
     try:
-        if method == "AI cutout":
-            with st.spinner("Cutting out the garment… the first run downloads the model."):
+        if method == "AI Engine (Auto)":
+            with st.spinner("🤖 Analyzing garment topology..."):
                 extracted_image = Image.open(io.BytesIO(ai_cutout(image_bytes, model_name, grow_px)))
-            note = model_label.split(" — ")[0]
         else:
-            with st.spinner("Calculating chroma key…"):
+            with st.spinner("🟩 Applying color math..."):
                 extracted_image = chroma_cutout(img_array, key_color_hex, tola, tolb, grow_px)
-            note = f"chroma key on {key_color_hex}"
 
-        st.image(extracted_image, width="stretch")
-        st.caption(note)
-
+        st.image(extracted_image, use_column_width=True)
+        
         buf = io.BytesIO()
         extracted_image.save(buf, format="PNG")
         st.download_button(
-            label="Save PNG",
+            label="↓ Export Transparent Asset (PNG)",
             data=buf.getvalue(),
-            file_name="cutout.png",
-            mime="image/png",
-            use_container_width=True,
+            file_name="product_asset.png",
+            mime="image/png"
         )
+        
     except ModuleNotFoundError as exc:
-        if exc.name in ["rembg", "onnxruntime"]:
-            st.error(
-                f"Missing dependency: `{exc.name}`. Add `rembg` and `onnxruntime` to "
-                "requirements.txt for the AI path."
-            )
-        else:
-            st.error(f"Missing dependency: `{exc.name}`.")
+        st.error(f"**Missing Engine Dependency:** `{exc.name}`")
+        st.info("Check your `requirements.txt` file in Streamlit Cloud.")
     except Exception as exc: 
-        st.error(f"Couldn't process this image: {exc}")
+        st.error(f"**Processing Error:** {exc}")
