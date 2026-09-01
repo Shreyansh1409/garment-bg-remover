@@ -16,7 +16,6 @@ st.markdown(
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
-    /* Base Typography */
     html, body, [class*="css"] {
         font-family: 'Inter', sans-serif;
     }
@@ -25,7 +24,6 @@ st.markdown(
     header { visibility: hidden; }
     footer { visibility: hidden; }
 
-    /* Layout & Headers */
     .app-header {
         margin-bottom: 2rem;
         padding-bottom: 1rem;
@@ -48,7 +46,6 @@ st.markdown(
         margin-bottom: 0.5rem;
     }
 
-    /* Buttons */
     .stButton > button {
         background-color: #4F46E5 !important;
         color: white !important;
@@ -80,7 +77,6 @@ st.markdown(
         box-shadow: 0 4px 6px -1px rgba(16, 185, 129, 0.2) !important;
     }
 
-    /* Image Containers & Checkerboard Background for Transparency */
     [data-testid="stImage"] {
         background-color: #ffffff;
         background-image:
@@ -104,7 +100,6 @@ st.markdown(
         opacity: 0.8;
     }
     
-    /* File Uploader */
     [data-testid="stFileUploaderDropzone"] {
         border-radius: 12px;
         border: 2px dashed rgba(128, 128, 128, 0.4);
@@ -229,19 +224,17 @@ image_bytes = uploaded_file.getvalue()
 original_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
 img_array = np.array(original_image)
 
-# 2. Sidebar renders after image is loaded
 with st.sidebar:
-    # --- ADD THIS STATE INITIALIZATION ---
+    # --- Session State for + / - Steppers ---
     if "fringe_val" not in st.session_state:
         st.session_state.fringe_val = 0
 
     def step_fringe(delta):
-        # Keeps the value strictly between 0 and 5
         st.session_state.fringe_val = max(0, min(5, st.session_state.fringe_val + delta))
-    # -------------------------------------
+    # ----------------------------------------
 
     st.markdown('<div class="sidebar-header">Engine Settings</div>', unsafe_allow_html=True)
-    method = st.radio("Processing Engine", ["AI Engine (Auto)", "Chroma Key (Studio Green)"], label_visibility="collapsed")
+    method = st.radio("Processing Engine", ["AI Engine (Auto)", "Chroma Key (Studio Green)", "Hybrid (AI + Chroma)"], label_visibility="collapsed")
     
     st.markdown("---")
     
@@ -250,10 +243,9 @@ with st.sidebar:
         model_label = st.selectbox("Model Tier", list(AI_MODELS), index=0)
         model_name = AI_MODELS[model_label]
         
-        with st.expander("Edge Cleanup"):
+        with st.expander("Edge Cleanup", expanded=True):
             st.markdown("<p style='font-size: 0.9rem; font-weight: 500; margin-bottom: 0;'>Fringe Eraser (px)</p>", unsafe_allow_html=True)
             col_min, col_slide, col_plus = st.columns([1, 4, 1])
-            
             with col_min:
                 st.button("−", on_click=step_fringe, args=(-1,), use_container_width=True, key="ai_minus")
             with col_slide:
@@ -261,23 +253,43 @@ with st.sidebar:
             with col_plus:
                 st.button("+", on_click=step_fringe, args=(1,), use_container_width=True, key="ai_plus")
             
-    else:
+    elif method == "Chroma Key (Studio Green)":
         st.markdown('<div class="sidebar-header">Keying Parameters</div>', unsafe_allow_html=True)
         detected_hex = detect_background_hex(img_array)
         key_color_hex = st.color_picker("Key Color", detected_hex)
-        tola = st.slider("Tolerance A (Shadows)", 1, 50, 10, help="Pixels darker/closer to this color are deleted.")
-        tolb = st.slider("Tolerance B (Highlights)", tola + 1, 120, 60, help="Pixels beyond this distance are kept 100%.")
+        tola = st.slider("Tolerance A (Shadows)", 1, 50, 10)
+        tolb = st.slider("Tolerance B (Highlights)", tola + 1, 120, 60)
         
-        with st.expander("Edge Cleanup"):
+        with st.expander("Edge Cleanup", expanded=True):
             st.markdown("<p style='font-size: 0.9rem; font-weight: 500; margin-bottom: 0;'>Fringe Eraser (px)</p>", unsafe_allow_html=True)
             col_min, col_slide, col_plus = st.columns([1, 4, 1])
-            
             with col_min:
                 st.button("−", on_click=step_fringe, args=(-1,), use_container_width=True, key="chroma_minus")
             with col_slide:
                 grow_px = st.slider("Fringe", 0, 5, key="fringe_val", label_visibility="collapsed")
             with col_plus:
                 st.button("+", on_click=step_fringe, args=(1,), use_container_width=True, key="chroma_plus")
+                
+    elif method == "Hybrid (AI + Chroma)":
+        st.markdown('<div class="sidebar-header">Hybrid Parameters</div>', unsafe_allow_html=True)
+        model_label = st.selectbox("AI Model Tier", list(AI_MODELS), index=0)
+        model_name = AI_MODELS[model_label]
+        
+        detected_hex = detect_background_hex(img_array)
+        key_color_hex = st.color_picker("Key Color", detected_hex)
+        tola = st.slider("Tolerance A (Shadows)", 1, 50, 10)
+        tolb = st.slider("Tolerance B (Highlights)", tola + 1, 120, 60)
+        
+        with st.expander("Edge Cleanup", expanded=True):
+            st.markdown("<p style='font-size: 0.9rem; font-weight: 500; margin-bottom: 0;'>Fringe Eraser (px)</p>", unsafe_allow_html=True)
+            col_min, col_slide, col_plus = st.columns([1, 4, 1])
+            with col_min:
+                st.button("−", on_click=step_fringe, args=(-1,), use_container_width=True, key="hyb_minus")
+            with col_slide:
+                grow_px = st.slider("Fringe", 0, 5, key="fringe_val", label_visibility="collapsed")
+            with col_plus:
+                st.button("+", on_click=step_fringe, args=(1,), use_container_width=True, key="hyb_plus")
+
 
 # 3. Process & Render Result
 col1, col2 = st.columns(2, gap="large")
@@ -293,9 +305,27 @@ with col2:
         if method == "AI Engine (Auto)":
             with st.spinner(f"🤖 Running {model_label.split(' ')[0]} model..."):
                 extracted_image = Image.open(io.BytesIO(ai_cutout(image_bytes, model_name, grow_px)))
-        else:
+                
+        elif method == "Chroma Key (Studio Green)":
             with st.spinner("🟩 Applying color math..."):
                 extracted_image = chroma_cutout(img_array, key_color_hex, tola, tolb, grow_px)
+                
+        elif method == "Hybrid (AI + Chroma)":
+            with st.spinner("⚔️ Fusing AI Shape & Color Math..."):
+                # Run AI (without edge erosion yet)
+                ai_bytes = ai_cutout(image_bytes, model_name, 0)
+                ai_alpha = np.array(Image.open(io.BytesIO(ai_bytes)).split()[-1])
+                
+                # Run Chroma (with spill suppression and edge erosion)
+                chroma_img = chroma_cutout(img_array, key_color_hex, tola, tolb, grow_px)
+                chroma_alpha = np.array(chroma_img.split()[-1])
+                
+                # Intersect Alphas: If EITHER engine says it's background, delete it.
+                combined_alpha = np.minimum(ai_alpha, chroma_alpha)
+                
+                # Apply combined alpha to the spill-suppressed Chroma RGB
+                extracted_image = chroma_img.copy()
+                extracted_image.putalpha(Image.fromarray(combined_alpha))
 
         st.image(extracted_image, use_container_width=True)
         
