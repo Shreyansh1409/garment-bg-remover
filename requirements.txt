@@ -3,6 +3,5 @@ Pillow
 numpy
 scipy
 opencv-python-headless
-chromakey
 rembg
 onnxruntime
