@@ -5,5 +5,5 @@ Pillow
 scipy
 rembg
 onnxruntime
-requests
-huggingface_hub
+transformers
+torch
