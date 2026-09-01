@@ -7,10 +7,20 @@ from PIL import Image
 from scipy.ndimage import distance_transform_edt
 
 # ---------------------------------------------------------------------------
-# App Configuration & Modern App CSS
+# App Configuration & Callbacks
 # ---------------------------------------------------------------------------
 st.set_page_config(layout="wide", page_title="Garment Extractor Pro", page_icon="✂️", initial_sidebar_state="expanded")
 
+# Initialize state at the very top to prevent runtime routing crashes
+if "fringe_val" not in st.session_state:
+    st.session_state.fringe_val = 0
+
+def step_fringe(delta):
+    st.session_state.fringe_val = max(0, min(5, st.session_state.fringe_val + delta))
+
+# ---------------------------------------------------------------------------
+# Modern App CSS
+# ---------------------------------------------------------------------------
 st.markdown(
     """
     <style>
@@ -122,7 +132,8 @@ AI_MODELS = {
 
 MAX_MASK_EDGE = 1024  
 
-@st.cache_resource(show_spinner=False)
+# MEMORY FIX: max_entries=1 drops the old neural network before loading a new one.
+@st.cache_resource(show_spinner=False, max_entries=1)
 def load_ai_session(model_name: str):
     import onnxruntime as ort
     from rembg.sessions import sessions_class
@@ -136,7 +147,7 @@ def load_ai_session(model_name: str):
     return session_cls(model_name, opts)
 
 
-@st.cache_data(show_spinner=False, max_entries=4)
+@st.cache_data(show_spinner=False, max_entries=2)
 def ai_cutout(image_bytes: bytes, model_name: str, grow_px: int) -> bytes:
     from rembg import remove
 
@@ -235,12 +246,6 @@ original_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
 img_array = np.array(original_image)
 
 with st.sidebar:
-    if "fringe_val" not in st.session_state:
-        st.session_state.fringe_val = 0
-
-    def step_fringe(delta):
-        st.session_state.fringe_val = max(0, min(5, st.session_state.fringe_val + delta))
-
     st.markdown('<div class="sidebar-header">Engine Settings</div>', unsafe_allow_html=True)
     method = st.radio("Processing Engine", ["AI Engine (Auto)", "Chroma Key (Studio Green)", "Hybrid (AI + Chroma)"], label_visibility="collapsed")
     
@@ -249,29 +254,28 @@ with st.sidebar:
     if method == "AI Engine (Auto)":
         st.info("💡 **Best for most photos.** The AI ignores colors and looks for physical structure, effortlessly handling gray walls, shadows, and textured floors.")
         st.markdown('<div class="sidebar-header">AI Parameters</div>', unsafe_allow_html=True)
-        model_label = st.selectbox("Model Tier", list(AI_MODELS), index=0)
+        model_label = st.selectbox("Model Tier", list(AI_MODELS), index=0, key="ai_model_sel")
         model_name = AI_MODELS[model_label]
             
     elif method == "Chroma Key (Studio Green)":
         st.warning("⚠️ **Best for solid backdrops only.** Relies on strict color contrast. Fails on complex backgrounds or shadows.")
         st.markdown('<div class="sidebar-header">Keying Parameters</div>', unsafe_allow_html=True)
         detected_hex = detect_background_hex(img_array)
-        key_color_hex = st.color_picker("Key Color", detected_hex)
-        tola = st.slider("Tolerance A (Shadows)", 1, 50, 10)
-        tolb = st.slider("Tolerance B (Highlights)", tola + 1, 120, 60)
+        key_color_hex = st.color_picker("Key Color", detected_hex, key="chroma_color")
+        tola = st.slider("Tolerance A (Shadows)", 1, 50, 10, key="chroma_tola")
+        tolb = st.slider("Tolerance B (Highlights)", tola + 1, 120, 60, key="chroma_tolb")
                 
     elif method == "Hybrid (AI + Chroma)":
         st.info("⚡ **Best for perfect green screens.** Combines AI shape detection with strict color math to punch out enclosed gaps.")
         st.markdown('<div class="sidebar-header">Hybrid Parameters</div>', unsafe_allow_html=True)
-        model_label = st.selectbox("AI Model Tier", list(AI_MODELS), index=0)
+        model_label = st.selectbox("AI Model Tier", list(AI_MODELS), index=0, key="hyb_model_sel")
         model_name = AI_MODELS[model_label]
         
         detected_hex = detect_background_hex(img_array)
-        key_color_hex = st.color_picker("Key Color", detected_hex)
-        tola = st.slider("Tolerance A (Shadows)", 1, 50, 10)
-        tolb = st.slider("Tolerance B (Highlights)", tola + 1, 120, 60)
+        key_color_hex = st.color_picker("Key Color", detected_hex, key="hyb_color")
+        tola = st.slider("Tolerance A (Shadows)", 1, 50, 10, key="hyb_tola")
+        tolb = st.slider("Tolerance B (Highlights)", tola + 1, 120, 60, key="hyb_tolb")
         
-    # Defined strictly ONCE to prevent DuplicateWidgetID crashes
     with st.expander("Edge Cleanup", expanded=True):
         st.markdown("<p style='font-size: 0.9rem; font-weight: 500; margin-bottom: 0;'>Fringe Eraser (px)</p>", unsafe_allow_html=True)
         col_min, col_slide, col_plus = st.columns([1, 4, 1])
