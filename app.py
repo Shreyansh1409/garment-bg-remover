@@ -220,10 +220,22 @@ def chroma_cutout(img_array: np.ndarray, key_hex: str, tola: int, tolb: int, gro
 
 
 # ---------------------------------------------------------------------------
-# UI - App Shell & Sidebar
+# UI - Main App Logic
 # ---------------------------------------------------------------------------
 st.markdown('<div class="app-header"><div class="app-title">Garment Extractor Pro</div><div class="app-subtitle">Create clean, transparent product assets instantly.</div></div>', unsafe_allow_html=True)
 
+# 1. Image upload must happen first so the sidebar can dynamically read the background hex
+uploaded_file = st.file_uploader("Upload product photo to begin", type=["png", "jpg", "jpeg"], label_visibility="collapsed")
+
+if uploaded_file is None:
+    st.info("👋 Upload a garment photo above to launch the extraction studio.")
+    st.stop()
+
+image_bytes = uploaded_file.getvalue()
+original_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+img_array = np.array(original_image)
+
+# 2. Sidebar renders after image is loaded
 with st.sidebar:
     st.markdown('<div class="sidebar-header">Engine Settings</div>', unsafe_allow_html=True)
     method = st.radio("Processing Engine", ["AI Engine (Auto)", "Chroma Key (Studio Green)"], label_visibility="collapsed")
@@ -235,12 +247,12 @@ with st.sidebar:
         model_label = st.selectbox("Model Tier", list(AI_MODELS), index=0)
         model_name = AI_MODELS[model_label]
         
-        with st.expander("Advanced Output Settings"):
+        with st.expander("Edge Cleanup"):
             grow_px = st.slider("Fringe Eraser (px)", 0, 5, 0, help="Shrinks the cutout mask to remove edge halos.")
             
     else:
         st.markdown('<div class="sidebar-header">Keying Parameters</div>', unsafe_allow_html=True)
-        detected_hex = "#3A6047"
+        detected_hex = detect_background_hex(img_array)
         key_color_hex = st.color_picker("Key Color", detected_hex)
         tola = st.slider("Tolerance A (Shadows)", 1, 50, 10, help="Pixels darker/closer to this color are deleted.")
         tolb = st.slider("Tolerance B (Highlights)", tola + 1, 120, 60, help="Pixels beyond this distance are kept 100%.")
@@ -249,19 +261,7 @@ with st.sidebar:
             grow_px = st.slider("Fringe Eraser (px)", 0, 5, 2)
 
 
-# ---------------------------------------------------------------------------
-# UI - Main Workspace
-# ---------------------------------------------------------------------------
-uploaded_file = st.file_uploader("Upload product photo to begin", type=["png", "jpg", "jpeg"], label_visibility="collapsed")
-
-if uploaded_file is None:
-    st.info("👋 Upload a garment photo above to launch the extraction studio.")
-    st.stop()
-
-image_bytes = uploaded_file.getvalue()
-original_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-img_array = np.array(original_image)
-
+# 3. Process & Render Result
 col1, col2 = st.columns(2, gap="large")
 
 with col1:
@@ -299,7 +299,8 @@ with col2:
             label="↓ Export Transparent Asset (PNG)",
             data=buf.getvalue(),
             file_name="product_asset.png",
-            mime="image/png"
+            mime="image/png",
+            use_container_width=True
         )
         
     except ModuleNotFoundError as exc:
