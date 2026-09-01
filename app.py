@@ -113,11 +113,12 @@ st.markdown(
 # ---------------------------------------------------------------------------
 # Core Logic: AI Cutout
 # ---------------------------------------------------------------------------
+
 AI_MODELS = {
+    "U2Net Human (Best for People)": "u2net_human_seg",
     "u2netp (Fast & Light)": "u2netp",
     "u2net (High Quality)": "u2net",
     "IS-Net (Fine Edges & Details)": "isnet-general-use",
-    "U2Net Cloth Segmentation (Apparel Focus)": "u2net_cloth_seg",
 }
 
 MAX_MASK_EDGE = 1024  
