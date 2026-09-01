@@ -5,6 +5,36 @@ import streamlit as st
 from PIL import Image
 from scipy.ndimage import distance_transform_edt
 
+import torch
+from diffusers import AutoPipelineForInpainting
+from diffusers.utils import load_image
+
+# 1. Load the model directly to your Mac's GPU (MPS) or fallback to CPU
+device = "mps" if torch.backends.mps.is_available() else "cpu"
+pipeline = AutoPipelineForInpainting.from_pretrained(
+    "runwayml/stable-diffusion-inpainting", 
+    torch_dtype=torch.float16 if device == "mps" else torch.float32
+).to(device)
+
+# 2. Load the exported assets from your Streamlit app
+init_image = load_image("product_asset.png").convert("RGB")
+mask_image = load_image("occlusion_mask.png").convert("RGB")
+
+# 3. Hallucinate the missing fabric
+prompt = "seamless continuous fabric, high quality clothing flat lay"
+negative_prompt = "skin, hair, hands, fingers, human body, artifacts, ugly"
+
+result = pipeline(
+    prompt=prompt,
+    negative_prompt=negative_prompt,
+    image=init_image,
+    mask_image=mask_image,
+    guidance_scale=7.5,
+    strength=0.99  # 0.99 forces maximum hallucination inside the mask
+).images[0]
+
+result.save("reconstructed_garment.png")
+
 # ---------------------------------------------------------------------------
 # App Configuration & Callbacks
 # ---------------------------------------------------------------------------
