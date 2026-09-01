@@ -1,5 +1,4 @@
 import io
-
 import cv2
 import numpy as np
 import streamlit as st
@@ -89,44 +88,50 @@ def load_segformer():
     return processor, model
 
 @st.cache_data(show_spinner=False, max_entries=2)
-def local_segformer_cutout(image_bytes: bytes, grow_px: int) -> bytes:
+def local_segformer_cutout(image_bytes: bytes, grow_px: int):
     import torch
     import torch.nn as nn
     
     processor, model = load_segformer()
     source_img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     
-    # Process image natively via PyTorch tensors
     inputs = processor(images=source_img, return_tensors="pt")
     with torch.no_grad():
         outputs = model(**inputs)
         
     logits = outputs.logits.cpu()
     upsampled_logits = nn.functional.interpolate(
-        logits,
-        size=source_img.size[::-1], # (height, width)
-        mode="bilinear",
-        align_corners=False,
+        logits, size=source_img.size[::-1], mode="bilinear", align_corners=False,
     )
     
-    # Convert logits to categorical integer maps
     pred_seg = upsampled_logits.argmax(dim=1)[0].numpy()
     
-    # Model Classes: 4: Upper-clothes, 5: Skirt, 6: Pants, 7: Dress
-    target_labels = [4, 5, 6, 7]
-    mask_arr = np.isin(pred_seg, target_labels).astype(np.uint8) * 255
+    # 1. Garment Extraction
+    target_labels = [4, 5, 6, 7] # Upper-clothes, Skirt, Pants, Dress
+    garment_arr = np.isin(pred_seg, target_labels).astype(np.uint8) * 255
+    
+    # 2. Inpainting Occlusion Mask (Hair + Arms)
+    occlusion_labels = [2, 14, 15] # Hair, Left Arm, Right Arm
+    occlusion_arr = np.isin(pred_seg, occlusion_labels).astype(np.uint8) * 255
         
     if grow_px > 0:
         kernel = np.ones((3, 3), np.uint8)
-        mask_arr = cv2.erode(mask_arr, kernel, iterations=grow_px)
+        garment_arr = cv2.erode(garment_arr, kernel, iterations=grow_px)
+        occlusion_arr = cv2.dilate(occlusion_arr, kernel, iterations=grow_px) # Dilate mask for better inpaint blending
         
-    mask = Image.fromarray(mask_arr, mode="L")
-    result = source_img.convert("RGBA")
-    result.putalpha(mask)
+    garment_mask = Image.fromarray(garment_arr, mode="L")
+    inpaint_mask = Image.fromarray(occlusion_arr, mode="L")
     
-    buf = io.BytesIO()
-    result.save(buf, format="PNG")
-    return buf.getvalue()
+    result = source_img.convert("RGBA")
+    result.putalpha(garment_mask)
+    
+    garment_buf = io.BytesIO()
+    result.save(garment_buf, format="PNG")
+    
+    mask_buf = io.BytesIO()
+    inpaint_mask.save(mask_buf, format="PNG")
+    
+    return garment_buf.getvalue(), mask_buf.getvalue()
 
 # ---------------------------------------------------------------------------
 # Local AI (rembg) Engine
@@ -190,7 +195,6 @@ def ai_cutout(image_bytes: bytes, model_name: str, grow_px: int) -> bytes:
     result.save(buf, format="PNG")
     return buf.getvalue()
 
-
 # ---------------------------------------------------------------------------
 # Chroma Key Engine
 # ---------------------------------------------------------------------------
@@ -234,7 +238,6 @@ def chroma_cutout(img_array: np.ndarray, key_hex: str, tola: int, tolb: int, gro
     rgba = np.dstack([final_rgb, alpha]).astype(np.uint8)
     return Image.fromarray(rgba, "RGBA")
 
-
 # ---------------------------------------------------------------------------
 # UI - Main App Logic
 # ---------------------------------------------------------------------------
@@ -262,7 +265,7 @@ with st.sidebar:
     st.markdown("---")
     
     if method == "Segformer (Pro Garment AI)":
-        st.info("🚀 **State-of-the-Art Clothing AI.** Uses an advanced PyTorch transformer to accurately map 18 garment classes locally while strictly ignoring skin and backgrounds.")
+        st.info("🚀 **State-of-the-Art Clothing AI.** Uses an advanced PyTorch transformer to accurately map garment classes locally while strictly ignoring skin and backgrounds. Generates an inpainting mask for occlusion zones.")
         
     elif method == "Local AI (Basic & Full Subject)":
         st.info("💡 **Basic Model.** Extracts the general silhouette perfectly. Struggles with internal specific garments.")
@@ -298,7 +301,6 @@ with st.sidebar:
         with col_plus:
             st.button("+", on_click=step_fringe, args=(1,), width="stretch", key="btn_plus")
 
-
 # 3. Process & Render Result
 col1, col2 = st.columns(2, gap="large")
 
@@ -311,42 +313,60 @@ with col2:
     
     try:
         if method == "Segformer (Pro Garment AI)":
-            with st.spinner("🧠 Downloading & running Segformer (Local PyTorch)..."):
-                extracted_image = Image.open(io.BytesIO(local_segformer_cutout(image_bytes, grow_px)))
-
-        elif method == "Local AI (Basic & Full Subject)":
-            with st.spinner(f"🤖 Running {model_label.split(' ')[0]} model..."):
-                extracted_image = Image.open(io.BytesIO(ai_cutout(image_bytes, model_name, grow_px)))
+            with st.spinner("🧠 Running Segformer (Local PyTorch)..."):
+                garment_bytes, mask_bytes = local_segformer_cutout(image_bytes, grow_px)
+                extracted_image = Image.open(io.BytesIO(garment_bytes))
+                inpaint_mask = Image.open(io.BytesIO(mask_bytes))
                 
-        elif method == "Chroma Key (Studio Green)":
-            with st.spinner("🟩 Applying color math..."):
-                extracted_image = chroma_cutout(img_array, key_color_hex, tola, tolb, grow_px)
-                
-        elif method == "Hybrid (AI + Chroma)":
-            with st.spinner("⚔️ Fusing AI Shape & Color Math..."):
-                ai_bytes = ai_cutout(image_bytes, model_name, 0)
-                ai_alpha = np.array(Image.open(io.BytesIO(ai_bytes)).split()[-1])
-                
-                chroma_img = chroma_cutout(img_array, key_color_hex, tola, tolb, grow_px)
-                chroma_alpha = np.array(chroma_img.split()[-1])
-                
-                combined_alpha = np.minimum(ai_alpha, chroma_alpha)
-                
-                extracted_image = chroma_img.copy()
-                extracted_image.putalpha(Image.fromarray(combined_alpha))
-
-        st.image(extracted_image, width="stretch")
-        
-        buf = io.BytesIO()
-        extracted_image.save(buf, format="PNG")
-        st.download_button(
-            label="↓ Export Transparent Asset (PNG)",
-            data=buf.getvalue(),
-            file_name="product_asset.png",
-            mime="image/png",
-            width="stretch"
-        )
-        
+            st.image(extracted_image, width="stretch")
+            
+            st.download_button(
+                label="↓ Export Transparent Asset (PNG)",
+                data=garment_bytes,
+                file_name="product_asset.png",
+                mime="image/png",
+                width="stretch"
+            )
+            
+            st.markdown("---")
+            st.markdown('<div class="image-card-title" style="margin-top:1rem;">Generative Inpainting Data</div>', unsafe_allow_html=True)
+            st.info("Pipe this occlusion mask into an inpainting model to hallucinate the missing fabric.")
+            st.image(inpaint_mask, width="stretch")
+            st.download_button(
+                label="↓ Export Inpainting Mask (PNG)",
+                data=mask_bytes,
+                file_name="occlusion_mask.png",
+                mime="image/png",
+                width="stretch"
+            )
+            
+        else:
+            with st.spinner("Processing..."):
+                if method == "Local AI (Basic & Full Subject)":
+                    out_bytes = ai_cutout(image_bytes, model_name, grow_px)
+                    extracted_image = Image.open(io.BytesIO(out_bytes))
+                elif method == "Chroma Key (Studio Green)":
+                    extracted_image = chroma_cutout(img_array, key_color_hex, tola, tolb, grow_px)
+                elif method == "Hybrid (AI + Chroma)":
+                    ai_bytes = ai_cutout(image_bytes, model_name, 0)
+                    ai_alpha = np.array(Image.open(io.BytesIO(ai_bytes)).split()[-1])
+                    chroma_img = chroma_cutout(img_array, key_color_hex, tola, tolb, grow_px)
+                    chroma_alpha = np.array(chroma_img.split()[-1])
+                    combined_alpha = np.minimum(ai_alpha, chroma_alpha)
+                    extracted_image = chroma_img.copy()
+                    extracted_image.putalpha(Image.fromarray(combined_alpha))
+                    
+            st.image(extracted_image, width="stretch")
+            buf = io.BytesIO()
+            extracted_image.save(buf, format="PNG")
+            st.download_button(
+                label="↓ Export Transparent Asset (PNG)",
+                data=buf.getvalue(),
+                file_name="product_asset.png",
+                mime="image/png",
+                width="stretch"
+            )
+            
     except ModuleNotFoundError as exc:
         st.error(f"**Missing Engine Dependency:** `{exc.name}`")
         st.info("Check your `requirements.txt` file in Streamlit Cloud.")
