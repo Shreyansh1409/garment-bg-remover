@@ -103,20 +103,30 @@ st.markdown(
 # Segformer API Logic
 # ---------------------------------------------------------------------------
 def hf_segformer_cutout(image_bytes: bytes, hf_token: str, grow_px: int) -> bytes:
-    # Updated to the current Hugging Face router endpoint
+    from huggingface_hub import InferenceClient
+    
+    if not hf_token:
+        raise ValueError("Hugging Face API Token is missing.")
+        
+    # Initialize the official Hugging Face inference client for the clothing model
+    client = InferenceClient(model="mattmdjaga/segformer_b2_clothes", token=hf_token)
+    
+    # Send image bytes directly to the model using image-to-image or custom pipeline execution
+    # Note: image-segmentation tasks return a list of dictionaries containing labels and base64 masks
+    source_img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    
+    # Using post request through the client session for image segmentation payload
     API_URL = "https://router.huggingface.co/hf-inference/models/mattmdjaga/segformer_b2_clothes"
     headers = {"Authorization": f"Bearer {hf_token}"}
     
     response = requests.post(API_URL, headers=headers, data=image_bytes)
     response.raise_for_status()
-    
-    
     result_json = response.json()
+    
     if isinstance(result_json, dict) and "error" in result_json:
-        raise ValueError(f"API Error: {result_json['error']}")
+        raise ValueError(f"Hugging Face API Error: {result_json['error']}")
         
     target_labels = ["Upper-clothes", "Pants", "Skirt", "Dress", "Coat"]
-    source_img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     combined_mask = None
     
     for item in result_json:
@@ -144,7 +154,6 @@ def hf_segformer_cutout(image_bytes: bytes, hf_token: str, grow_px: int) -> byte
     buf = io.BytesIO()
     result.save(buf, format="PNG")
     return buf.getvalue()
-
 # ---------------------------------------------------------------------------
 # Local AI Cutout Logic
 # ---------------------------------------------------------------------------
