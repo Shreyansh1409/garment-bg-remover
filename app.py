@@ -16,44 +16,39 @@ st.markdown(
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
+    /* Base Typography */
     html, body, [class*="css"] {
         font-family: 'Inter', sans-serif;
-        background-color: #F9FAFB;
-        color: #111827;
     }
 
     .block-container { padding-top: 2rem !important; max-width: 1400px; }
     header { visibility: hidden; }
     footer { visibility: hidden; }
 
+    /* Layout & Headers */
     .app-header {
         margin-bottom: 2rem;
         padding-bottom: 1rem;
-        border-bottom: 1px solid #E5E7EB;
+        border-bottom: 1px solid rgba(128, 128, 128, 0.2);
     }
     .app-title {
         font-weight: 700;
         font-size: 2.25rem;
-        color: #111827;
         margin-bottom: 0.25rem;
     }
     .app-subtitle {
         font-size: 1rem;
-        color: #6B7280;
+        opacity: 0.7;
     }
 
-    [data-testid="stSidebar"] {
-        background-color: #FFFFFF;
-        border-right: 1px solid #E5E7EB;
-    }
     .sidebar-header {
         font-weight: 600;
         font-size: 1.1rem;
         margin-top: 1rem;
         margin-bottom: 0.5rem;
-        color: #374151;
     }
 
+    /* Buttons */
     .stButton > button {
         background-color: #4F46E5 !important;
         color: white !important;
@@ -85,32 +80,35 @@ st.markdown(
         box-shadow: 0 4px 6px -1px rgba(16, 185, 129, 0.2) !important;
     }
 
-    .image-card {
-        background: #FFFFFF;
-        padding: 1rem;
-        border-radius: 12px;
-        box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06);
-        border: 1px solid #E5E7EB;
-        margin-bottom: 1rem;
+    /* Image Containers & Checkerboard Background for Transparency */
+    [data-testid="stImage"] {
+        background-color: #ffffff;
+        background-image:
+            linear-gradient(45deg, #e5e5e5 25%, transparent 25%),
+            linear-gradient(135deg, #e5e5e5 25%, transparent 25%),
+            linear-gradient(45deg, transparent 75%, #e5e5e5 75%),
+            linear-gradient(135deg, transparent 75%, #e5e5e5 75%);
+        background-size: 20px 20px;
+        background-position: 0 0, 10px 0, 10px -10px, 0px 10px;
+        border-radius: 8px;
+        overflow: hidden;
+        border: 1px solid rgba(128, 128, 128, 0.2);
     }
+
     .image-card-title {
         font-weight: 600;
         font-size: 0.9rem;
-        color: #4B5563;
         margin-bottom: 0.75rem;
         text-transform: uppercase;
         letter-spacing: 0.05em;
+        opacity: 0.8;
     }
     
+    /* File Uploader */
     [data-testid="stFileUploaderDropzone"] {
         border-radius: 12px;
-        border: 2px dashed #D1D5DB;
-        background-color: #FFFFFF;
+        border: 2px dashed rgba(128, 128, 128, 0.4);
         transition: all 0.2s;
-    }
-    [data-testid="stFileUploaderDropzone"]:hover {
-        border-color: #4F46E5;
-        background-color: #F5F3FF;
     }
     </style>
     """,
@@ -118,7 +116,7 @@ st.markdown(
 )
 
 # ---------------------------------------------------------------------------
-# Core Logic: AI Cutout (Expanded Model Tiers)
+# Core Logic: AI Cutout
 # ---------------------------------------------------------------------------
 AI_MODELS = {
     "u2netp (Fast & Light)": "u2netp",
@@ -156,7 +154,6 @@ def ai_cutout(image_bytes: bytes, model_name: str, grow_px: int) -> bytes:
     mask = channels[-1] if len(channels) == 4 else raw_mask.convert("L")
     mask = mask.resize(source.size, Image.LANCZOS)
 
-    # Fringe Removal (Erosion)
     if grow_px > 0:
         mask_arr = np.array(mask)
         kernel = np.ones((3, 3), np.uint8)
@@ -197,7 +194,6 @@ def chroma_cutout(img_array: np.ndarray, key_hex: str, tola: int, tolb: int, gro
     alpha_f = 1.0 - mask
     final_rgb = img_array.copy()
 
-    # Spill Suppression
     edge_mask = (alpha_f > 0.05) & (alpha_f < 0.95)
     if target_color[1] > target_color[0] and target_color[1] > target_color[2]:
         r, g, b = final_rgb[:,:,0].astype(np.float32), final_rgb[:,:,1].astype(np.float32), final_rgb[:,:,2].astype(np.float32)
@@ -205,7 +201,6 @@ def chroma_cutout(img_array: np.ndarray, key_hex: str, tola: int, tolb: int, gro
         suppressed_g = np.where(edge_mask & (g > max_green), max_green, g)
         final_rgb[:,:,1] = suppressed_g.astype(np.uint8)
 
-    # Fringe removal
     if grow_px > 0:
         fg_binary = (alpha_f > 0.5).astype(np.uint8)
         core = cv2.erode(fg_binary, np.ones((3, 3), np.uint8), iterations=grow_px)
@@ -224,7 +219,6 @@ def chroma_cutout(img_array: np.ndarray, key_hex: str, tola: int, tolb: int, gro
 # ---------------------------------------------------------------------------
 st.markdown('<div class="app-header"><div class="app-title">Garment Extractor Pro</div><div class="app-subtitle">Create clean, transparent product assets instantly.</div></div>', unsafe_allow_html=True)
 
-# 1. Image upload must happen first so the sidebar can dynamically read the background hex
 uploaded_file = st.file_uploader("Upload product photo to begin", type=["png", "jpg", "jpeg"], label_visibility="collapsed")
 
 if uploaded_file is None:
@@ -235,7 +229,6 @@ image_bytes = uploaded_file.getvalue()
 original_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
 img_array = np.array(original_image)
 
-# 2. Sidebar renders after image is loaded
 with st.sidebar:
     st.markdown('<div class="sidebar-header">Engine Settings</div>', unsafe_allow_html=True)
     method = st.radio("Processing Engine", ["AI Engine (Auto)", "Chroma Key (Studio Green)"], label_visibility="collapsed")
@@ -265,23 +258,11 @@ with st.sidebar:
 col1, col2 = st.columns(2, gap="large")
 
 with col1:
-    st.markdown(
-        """
-        <div class="image-card">
-            <div class="image-card-title">Source Image</div>
-        </div>
-        """, unsafe_allow_html=True
-    )
+    st.markdown('<div class="image-card-title">Source Image</div>', unsafe_allow_html=True)
     st.image(original_image, use_container_width=True)
 
 with col2:
-    st.markdown(
-        """
-        <div class="image-card">
-            <div class="image-card-title">Extraction Result</div>
-        </div>
-        """, unsafe_allow_html=True
-    )
+    st.markdown('<div class="image-card-title">Extraction Result</div>', unsafe_allow_html=True)
     
     try:
         if method == "AI Engine (Auto)":
