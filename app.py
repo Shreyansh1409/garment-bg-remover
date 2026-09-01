@@ -11,7 +11,6 @@ from scipy.ndimage import distance_transform_edt
 # ---------------------------------------------------------------------------
 st.set_page_config(layout="wide", page_title="Garment Extractor Pro", page_icon="✂️", initial_sidebar_state="expanded")
 
-# Initialize state at the very top to prevent runtime routing crashes
 if "fringe_val" not in st.session_state:
     st.session_state.fringe_val = 0
 
@@ -132,7 +131,6 @@ AI_MODELS = {
 
 MAX_MASK_EDGE = 1024  
 
-# MEMORY FIX: max_entries=1 drops the old neural network before loading a new one.
 @st.cache_resource(show_spinner=False, max_entries=1)
 def load_ai_session(model_name: str):
     import onnxruntime as ort
@@ -155,17 +153,24 @@ def ai_cutout(image_bytes: bytes, model_name: str, grow_px: int) -> bytes:
     small = source.copy()
     small.thumbnail((MAX_MASK_EDGE, MAX_MASK_EDGE), Image.LANCZOS)
     
-    raw_mask = remove(small, session=load_ai_session(model_name), only_mask=True)
-    
     if model_name == "u2net_cloth_seg":
-        rgb_mask = raw_mask.convert("RGB")
-        r, g, b = rgb_mask.split()
+        # Force the model to return the raw list of specific categorical masks
+        masks = remove(small, session=load_ai_session(model_name), only_mask=True, return_multiple=True)
         
-        # CORRECTED MAPPING:
-        # R = Lower Body, B = Upper Body. Drops the G (Skin) channel.
-        clothes_only = np.maximum(np.array(r), np.array(b))
-        mask = Image.fromarray(clothes_only).convert("L")
+        # rembg returns a list: [upper_body, lower_body, full_body]
+        if isinstance(masks, list) and len(masks) >= 2:
+            upper = np.array(masks[0].convert("L"))
+            lower = np.array(masks[1].convert("L"))
+            # Combine clothes masks, entirely ignoring the full_body/skin mask
+            clothes_only = np.maximum(upper, lower)
+            mask = Image.fromarray(clothes_only)
+        elif isinstance(masks, list):
+            mask = masks[0].convert("L")
+        else:
+            mask = masks.convert("L")
     else:
+        # Standard extraction for general silhouette models
+        raw_mask = remove(small, session=load_ai_session(model_name), only_mask=True)
         channels = raw_mask.split()
         mask = channels[-1] if len(channels) == 4 else raw_mask.convert("L")
         
@@ -277,16 +282,15 @@ with st.sidebar:
         tola = st.slider("Tolerance A (Shadows)", 1, 50, 10, key="hyb_tola")
         tolb = st.slider("Tolerance B (Highlights)", tola + 1, 120, 60, key="hyb_tolb")
         
-    # Defined strictly ONCE to prevent DuplicateWidgetID crashes
     with st.expander("Edge Cleanup", expanded=True):
         st.markdown("<p style='font-size: 0.9rem; font-weight: 500; margin-bottom: 0;'>Fringe Eraser (px)</p>", unsafe_allow_html=True)
         col_min, col_slide, col_plus = st.columns([1, 4, 1])
         with col_min:
-            st.button("−", on_click=step_fringe, args=(-1,), use_container_width=True, key="btn_minus")
+            st.button("−", on_click=step_fringe, args=(-1,), width="stretch", key="btn_minus")
         with col_slide:
             grow_px = st.slider("Fringe", 0, 5, key="fringe_val", label_visibility="collapsed")
         with col_plus:
-            st.button("+", on_click=step_fringe, args=(1,), use_container_width=True, key="btn_plus")
+            st.button("+", on_click=step_fringe, args=(1,), width="stretch", key="btn_plus")
 
 
 # 3. Process & Render Result
@@ -294,7 +298,7 @@ col1, col2 = st.columns(2, gap="large")
 
 with col1:
     st.markdown('<div class="image-card-title">Source Image</div>', unsafe_allow_html=True)
-    st.image(original_image, use_container_width=True)
+    st.image(original_image, width="stretch")
 
 with col2:
     st.markdown('<div class="image-card-title">Extraction Result</div>', unsafe_allow_html=True)
@@ -321,7 +325,7 @@ with col2:
                 extracted_image = chroma_img.copy()
                 extracted_image.putalpha(Image.fromarray(combined_alpha))
 
-        st.image(extracted_image, use_container_width=True)
+        st.image(extracted_image, width="stretch")
         
         buf = io.BytesIO()
         extracted_image.save(buf, format="PNG")
@@ -330,7 +334,7 @@ with col2:
             data=buf.getvalue(),
             file_name="product_asset.png",
             mime="image/png",
-            use_container_width=True
+            width="stretch"
         )
         
     except ModuleNotFoundError as exc:
