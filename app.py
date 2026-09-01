@@ -1,4 +1,6 @@
 import io
+import base64
+import requests
 
 import cv2
 import numpy as np
@@ -25,10 +27,7 @@ st.markdown(
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
-    html, body, [class*="css"] {
-        font-family: 'Inter', sans-serif;
-    }
-
+    html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
     .block-container { padding-top: 2rem !important; max-width: 1400px; }
     header { visibility: hidden; }
     footer { visibility: hidden; }
@@ -38,22 +37,9 @@ st.markdown(
         padding-bottom: 1rem;
         border-bottom: 1px solid rgba(128, 128, 128, 0.2);
     }
-    .app-title {
-        font-weight: 700;
-        font-size: 2.25rem;
-        margin-bottom: 0.25rem;
-    }
-    .app-subtitle {
-        font-size: 1rem;
-        opacity: 0.7;
-    }
-
-    .sidebar-header {
-        font-weight: 600;
-        font-size: 1.1rem;
-        margin-top: 1rem;
-        margin-bottom: 0.5rem;
-    }
+    .app-title { font-weight: 700; font-size: 2.25rem; margin-bottom: 0.25rem; }
+    .app-subtitle { font-size: 1rem; opacity: 0.7; }
+    .sidebar-header { font-weight: 600; font-size: 1.1rem; margin-top: 1rem; margin-bottom: 0.5rem; }
 
     .stButton > button {
         background-color: #4F46E5 !important;
@@ -77,13 +63,8 @@ st.markdown(
         border: none !important;
         font-weight: 600 !important;
         padding: 0.75rem 1.2rem !important;
-        transition: all 0.2s ease !important;
         width: 100%;
         margin-top: 1rem;
-    }
-    .stDownloadButton > button:hover {
-        background-color: #059669 !important;
-        box-shadow: 0 4px 6px -1px rgba(16, 185, 129, 0.2) !important;
     }
 
     [data-testid="stImage"] {
@@ -112,7 +93,6 @@ st.markdown(
     [data-testid="stFileUploaderDropzone"] {
         border-radius: 12px;
         border: 2px dashed rgba(128, 128, 128, 0.4);
-        transition: all 0.2s;
     }
     </style>
     """,
@@ -120,7 +100,51 @@ st.markdown(
 )
 
 # ---------------------------------------------------------------------------
-# Core Logic: AI Cutout
+# Segformer API Logic
+# ---------------------------------------------------------------------------
+def hf_segformer_cutout(image_bytes: bytes, hf_token: str, grow_px: int) -> bytes:
+    API_URL = "https://api-inference.huggingface.co/models/mattmdjaga/segformer_b2_clothes"
+    headers = {"Authorization": f"Bearer {hf_token}"}
+    
+    response = requests.post(API_URL, headers=headers, data=image_bytes)
+    response.raise_for_status()
+    
+    result_json = response.json()
+    if isinstance(result_json, dict) and "error" in result_json:
+        raise ValueError(f"API Error: {result_json['error']}")
+        
+    target_labels = ["Upper-clothes", "Pants", "Skirt", "Dress", "Coat"]
+    source_img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    combined_mask = None
+    
+    for item in result_json:
+        if item.get("label") in target_labels:
+            mask_data = base64.b64decode(item.get("mask"))
+            mask_img = Image.open(io.BytesIO(mask_data)).convert("L")
+            mask_img = mask_img.resize(source_img.size, Image.LANCZOS)
+            
+            if combined_mask is None:
+                combined_mask = np.array(mask_img)
+            else:
+                combined_mask = np.maximum(combined_mask, np.array(mask_img))
+                
+    if combined_mask is None:
+        raise ValueError("No garments detected by Segformer.")
+        
+    if grow_px > 0:
+        kernel = np.ones((3, 3), np.uint8)
+        combined_mask = cv2.erode(combined_mask, kernel, iterations=grow_px)
+        
+    mask_final = Image.fromarray(combined_mask)
+    result = source_img.convert("RGBA")
+    result.putalpha(mask_final)
+    
+    buf = io.BytesIO()
+    result.save(buf, format="PNG")
+    return buf.getvalue()
+
+# ---------------------------------------------------------------------------
+# Local AI Cutout Logic
 # ---------------------------------------------------------------------------
 AI_MODELS = {
     "Clothes ONLY (Deletes Skin & Hair)": "u2net_cloth_seg",
@@ -135,15 +159,12 @@ MAX_MASK_EDGE = 1024
 def load_ai_session(model_name: str):
     import onnxruntime as ort
     from rembg.sessions import sessions_class
-
     opts = ort.SessionOptions()
     opts.enable_cpu_mem_arena = False
     opts.intra_op_num_threads = 1
     opts.inter_op_num_threads = 1
-
     session_cls = {cls.name(): cls for cls in sessions_class}[model_name]
     return session_cls(model_name, opts)
-
 
 @st.cache_data(show_spinner=False, max_entries=2)
 def ai_cutout(image_bytes: bytes, model_name: str, grow_px: int) -> bytes:
@@ -154,14 +175,13 @@ def ai_cutout(image_bytes: bytes, model_name: str, grow_px: int) -> bytes:
     small.thumbnail((MAX_MASK_EDGE, MAX_MASK_EDGE), Image.LANCZOS)
     
     if model_name == "u2net_cloth_seg":
-        # Force the model to return the raw list of specific categorical masks
         masks = remove(small, session=load_ai_session(model_name), only_mask=True, return_multiple=True)
         
-        # rembg returns a list: [upper_body, lower_body, full_body]
-        if isinstance(masks, list) and len(masks) >= 2:
-            upper = np.array(masks[0].convert("L"))
+        if isinstance(masks, list) and len(masks) >= 3:
+            # Corrected Mapping based on visual artifacts: 
+            # 0 = Face/Hair, 1 = Lower Body, 2 = Upper Body
             lower = np.array(masks[1].convert("L"))
-            # Combine clothes masks, entirely ignoring the full_body/skin mask
+            upper = np.array(masks[2].convert("L"))
             clothes_only = np.maximum(upper, lower)
             mask = Image.fromarray(clothes_only)
         elif isinstance(masks, list):
@@ -169,7 +189,6 @@ def ai_cutout(image_bytes: bytes, model_name: str, grow_px: int) -> bytes:
         else:
             mask = masks.convert("L")
     else:
-        # Standard extraction for general silhouette models
         raw_mask = remove(small, session=load_ai_session(model_name), only_mask=True)
         channels = raw_mask.split()
         mask = channels[-1] if len(channels) == 4 else raw_mask.convert("L")
@@ -191,7 +210,7 @@ def ai_cutout(image_bytes: bytes, model_name: str, grow_px: int) -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# Core Logic: Chroma Key
+# Chroma Key Logic
 # ---------------------------------------------------------------------------
 def detect_background_hex(img_array: np.ndarray, border: int = 10) -> str:
     h, w, _ = img_array.shape
@@ -253,12 +272,22 @@ img_array = np.array(original_image)
 
 with st.sidebar:
     st.markdown('<div class="sidebar-header">Engine Settings</div>', unsafe_allow_html=True)
-    method = st.radio("Processing Engine", ["AI Engine (Auto)", "Chroma Key (Studio Green)", "Hybrid (AI + Chroma)"], label_visibility="collapsed")
+    method = st.radio("Processing Engine", [
+        "Segformer (Pro Garment AI)", 
+        "Local AI (Basic & Full Subject)", 
+        "Chroma Key (Studio Green)", 
+        "Hybrid (AI + Chroma)"
+    ], label_visibility="collapsed")
     
     st.markdown("---")
     
-    if method == "AI Engine (Auto)":
-        st.info("💡 **Best for most photos.** The AI ignores colors and looks for physical structure, effortlessly handling gray walls, shadows, and textured floors.")
+    if method == "Segformer (Pro Garment AI)":
+        st.info("🚀 **State-of-the-Art Clothing AI.** Uses an advanced transformer API to map 18 garment classes while ignoring skin and backgrounds.")
+        st.markdown('<div class="sidebar-header">API Configuration</div>', unsafe_allow_html=True)
+        hf_token = st.text_input("Hugging Face API Token", type="password", help="Get a free API token from your huggingface.co account settings.")
+        
+    elif method == "Local AI (Basic & Full Subject)":
+        st.info("💡 **Local Processing.** Extracts the general silhouette without an internet connection. Struggles with specific garments.")
         st.markdown('<div class="sidebar-header">AI Parameters</div>', unsafe_allow_html=True)
         model_label = st.selectbox("Model Tier", list(AI_MODELS), index=0, key="ai_model_sel")
         model_name = AI_MODELS[model_label]
@@ -276,7 +305,6 @@ with st.sidebar:
         st.markdown('<div class="sidebar-header">Hybrid Parameters</div>', unsafe_allow_html=True)
         model_label = st.selectbox("AI Model Tier", list(AI_MODELS), index=0, key="hyb_model_sel")
         model_name = AI_MODELS[model_label]
-        
         detected_hex = detect_background_hex(img_array)
         key_color_hex = st.color_picker("Key Color", detected_hex, key="hyb_color")
         tola = st.slider("Tolerance A (Shadows)", 1, 50, 10, key="hyb_tola")
@@ -304,7 +332,14 @@ with col2:
     st.markdown('<div class="image-card-title">Extraction Result</div>', unsafe_allow_html=True)
     
     try:
-        if method == "AI Engine (Auto)":
+        if method == "Segformer (Pro Garment AI)":
+            if not hf_token:
+                st.warning("A Hugging Face API Token is required for this engine.")
+                st.stop()
+            with st.spinner("🧠 Querying Segformer Transformer..."):
+                extracted_image = Image.open(io.BytesIO(hf_segformer_cutout(image_bytes, hf_token, grow_px)))
+
+        elif method == "Local AI (Basic & Full Subject)":
             with st.spinner(f"🤖 Running {model_label.split(' ')[0]} model..."):
                 extracted_image = Image.open(io.BytesIO(ai_cutout(image_bytes, model_name, grow_px)))
                 
