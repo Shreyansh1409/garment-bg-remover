@@ -14,17 +14,17 @@ st.markdown(
     @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600&family=Inter:wght@400;500;600&display=swap');
 
     :root {
-        --ink: #1E2A22;
-        --panel: #24332A;
-        --paper: #F4EFE2;
-        --paper-dim: #E9E1CC;
+        --ink: #FFFFFF;
+        --panel: #F8F9FA;
+        --paper: #FFFFFF;
+        --paper-dim: #E9ECEF;
         --thread: #B23A2E;
         --thread-dark: #8F2C22;
         --brass: #C79A4B;
-        --text-on-ink: #F1ECDD;
-        --text-on-paper: #23281F;
-        --line-on-ink: rgba(241, 236, 221, 0.16);
-        --line-on-paper: rgba(35, 40, 31, 0.14);
+        --text-on-ink: #1A1A1A;
+        --text-on-paper: #1A1A1A;
+        --line-on-ink: rgba(0, 0, 0, 0.12);
+        --line-on-paper: rgba(0, 0, 0, 0.12);
     }
 
     html, body, [data-testid="stAppViewContainer"] {
@@ -81,7 +81,7 @@ st.markdown(
     }
     .cw-sidebar-sub {
         font-size: 0.82rem;
-        opacity: 0.65;
+        opacity: 0.85;
         margin-bottom: 1.1rem;
     }
 
@@ -90,7 +90,7 @@ st.markdown(
         font-size: 0.78rem;
         font-weight: 500;
         letter-spacing: 0.02em;
-        color: var(--text-on-paper);
+        color: #FFFFFF;
         background: var(--brass);
         padding: 0.2rem 0.6rem;
         border-radius: 3px;
@@ -110,7 +110,7 @@ st.markdown(
 
     .stButton > button, [data-testid="stDownloadButton"] button {
         background-color: var(--thread);
-        color: var(--text-on-ink) !important;
+        color: #FFFFFF !important;
         border: none;
         border-radius: 4px;
         padding: 0.55rem 1.1rem;
