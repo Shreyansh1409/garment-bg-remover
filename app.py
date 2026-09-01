@@ -225,13 +225,11 @@ original_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
 img_array = np.array(original_image)
 
 with st.sidebar:
-    # --- Session State for + / - Steppers ---
     if "fringe_val" not in st.session_state:
         st.session_state.fringe_val = 0
 
     def step_fringe(delta):
         st.session_state.fringe_val = max(0, min(5, st.session_state.fringe_val + delta))
-    # ----------------------------------------
 
     st.markdown('<div class="sidebar-header">Engine Settings</div>', unsafe_allow_html=True)
     method = st.radio("Processing Engine", ["AI Engine (Auto)", "Chroma Key (Studio Green)", "Hybrid (AI + Chroma)"], label_visibility="collapsed")
@@ -239,6 +237,7 @@ with st.sidebar:
     st.markdown("---")
     
     if method == "AI Engine (Auto)":
+        st.info("💡 **Best for most photos.** The AI ignores colors and looks for physical structure, effortlessly handling gray walls, shadows, and textured floors.")
         st.markdown('<div class="sidebar-header">AI Parameters</div>', unsafe_allow_html=True)
         model_label = st.selectbox("Model Tier", list(AI_MODELS), index=0)
         model_name = AI_MODELS[model_label]
@@ -254,6 +253,7 @@ with st.sidebar:
                 st.button("+", on_click=step_fringe, args=(1,), use_container_width=True, key="ai_plus")
             
     elif method == "Chroma Key (Studio Green)":
+        st.warning("⚠️ **Best for solid backdrops only.** Relies on strict color contrast. Fails on complex backgrounds or shadows.")
         st.markdown('<div class="sidebar-header">Keying Parameters</div>', unsafe_allow_html=True)
         detected_hex = detect_background_hex(img_array)
         key_color_hex = st.color_picker("Key Color", detected_hex)
@@ -271,6 +271,7 @@ with st.sidebar:
                 st.button("+", on_click=step_fringe, args=(1,), use_container_width=True, key="chroma_plus")
                 
     elif method == "Hybrid (AI + Chroma)":
+        st.info("⚡ **Best for perfect green screens.** Combines AI shape detection with strict color math to punch out enclosed gaps.")
         st.markdown('<div class="sidebar-header">Hybrid Parameters</div>', unsafe_allow_html=True)
         model_label = st.selectbox("AI Model Tier", list(AI_MODELS), index=0)
         model_name = AI_MODELS[model_label]
@@ -312,18 +313,14 @@ with col2:
                 
         elif method == "Hybrid (AI + Chroma)":
             with st.spinner("⚔️ Fusing AI Shape & Color Math..."):
-                # Run AI (without edge erosion yet)
                 ai_bytes = ai_cutout(image_bytes, model_name, 0)
                 ai_alpha = np.array(Image.open(io.BytesIO(ai_bytes)).split()[-1])
                 
-                # Run Chroma (with spill suppression and edge erosion)
                 chroma_img = chroma_cutout(img_array, key_color_hex, tola, tolb, grow_px)
                 chroma_alpha = np.array(chroma_img.split()[-1])
                 
-                # Intersect Alphas: If EITHER engine says it's background, delete it.
                 combined_alpha = np.minimum(ai_alpha, chroma_alpha)
                 
-                # Apply combined alpha to the spill-suppressed Chroma RGB
                 extracted_image = chroma_img.copy()
                 extracted_image.putalpha(Image.fromarray(combined_alpha))
 
