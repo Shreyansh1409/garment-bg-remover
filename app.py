@@ -16,19 +16,16 @@ st.markdown(
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
-    /* Global App Font */
     html, body, [class*="css"] {
         font-family: 'Inter', sans-serif;
         background-color: #F9FAFB;
         color: #111827;
     }
 
-    /* Clean up top padding and hide Streamlit branding */
     .block-container { padding-top: 2rem !important; max-width: 1400px; }
     header { visibility: hidden; }
     footer { visibility: hidden; }
 
-    /* App Header Styling */
     .app-header {
         margin-bottom: 2rem;
         padding-bottom: 1rem;
@@ -45,7 +42,6 @@ st.markdown(
         color: #6B7280;
     }
 
-    /* Sidebar Styling */
     [data-testid="stSidebar"] {
         background-color: #FFFFFF;
         border-right: 1px solid #E5E7EB;
@@ -58,7 +54,6 @@ st.markdown(
         color: #374151;
     }
 
-    /* Primary Buttons (Process / Clear) */
     .stButton > button {
         background-color: #4F46E5 !important;
         color: white !important;
@@ -74,7 +69,6 @@ st.markdown(
         box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1) !important;
     }
 
-    /* Download Button (Success state) */
     .stDownloadButton > button {
         background-color: #10B981 !important;
         color: white !important;
@@ -91,7 +85,6 @@ st.markdown(
         box-shadow: 0 4px 6px -1px rgba(16, 185, 129, 0.2) !important;
     }
 
-    /* Image Card Containers */
     .image-card {
         background: #FFFFFF;
         padding: 1rem;
@@ -109,7 +102,6 @@ st.markdown(
         letter-spacing: 0.05em;
     }
     
-    /* Uploader styling */
     [data-testid="stFileUploaderDropzone"] {
         border-radius: 12px;
         border: 2px dashed #D1D5DB;
@@ -126,11 +118,13 @@ st.markdown(
 )
 
 # ---------------------------------------------------------------------------
-# Core Logic: AI Cutout
+# Core Logic: AI Cutout (Expanded Model Tiers)
 # ---------------------------------------------------------------------------
 AI_MODELS = {
-    "u2netp (Fast/Light)": "u2netp",
+    "u2netp (Fast & Light)": "u2netp",
     "u2net (High Quality)": "u2net",
+    "IS-Net (Fine Edges & Details)": "isnet-general-use",
+    "U2Net Cloth Segmentation (Apparel Focus)": "u2net_cloth_seg",
 }
 
 MAX_MASK_EDGE = 1024  
@@ -246,7 +240,7 @@ with st.sidebar:
             
     else:
         st.markdown('<div class="sidebar-header">Keying Parameters</div>', unsafe_allow_html=True)
-        detected_hex = "#3A6047" # Default placeholder, gets updated below
+        detected_hex = "#3A6047"
         key_color_hex = st.color_picker("Key Color", detected_hex)
         tola = st.slider("Tolerance A (Shadows)", 1, 50, 10, help="Pixels darker/closer to this color are deleted.")
         tolb = st.slider("Tolerance B (Highlights)", tola + 1, 120, 60, help="Pixels beyond this distance are kept 100%.")
@@ -264,18 +258,10 @@ if uploaded_file is None:
     st.info("👋 Upload a garment photo above to launch the extraction studio.")
     st.stop()
 
-# Load image
 image_bytes = uploaded_file.getvalue()
 original_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
 img_array = np.array(original_image)
 
-# Update sidebar chroma color dynamically if chroma is selected
-if method == "Chroma Key (Studio Green)":
-    detected_hex = detect_background_hex(img_array)
-    # Note: Streamlit color_picker doesn't auto-update from script flow easily without session state, 
-    # but the user will see their image and can pick the correct color.
-
-# Display Layout
 col1, col2 = st.columns(2, gap="large")
 
 with col1:
@@ -299,7 +285,7 @@ with col2:
     
     try:
         if method == "AI Engine (Auto)":
-            with st.spinner("🤖 Analyzing garment topology..."):
+            with st.spinner(f"🤖 Running {model_label.split(' ')[0]} model..."):
                 extracted_image = Image.open(io.BytesIO(ai_cutout(image_bytes, model_name, grow_px)))
         else:
             with st.spinner("🟩 Applying color math..."):
