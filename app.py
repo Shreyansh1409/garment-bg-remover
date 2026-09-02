@@ -105,10 +105,15 @@ MAX_MASK_EDGE = 1024
 def load_ai_session():
     import onnxruntime as ort
     from rembg.sessions import sessions_class
+    
     opts = ort.SessionOptions()
     opts.enable_cpu_mem_arena = False
     opts.intra_op_num_threads = 1
-    return sessions_class["u2net_cloth_seg"]("u2net_cloth_seg", opts)
+    
+    # Map the list of classes into a dictionary by name
+    session_dict = {cls.name(): cls for cls in sessions_class}
+    
+    return session_dict["u2net_cloth_seg"]("u2net_cloth_seg", opts)
 
 def _mirror_fill(rgb: np.ndarray, garment: np.ndarray, occluded: np.ndarray):
     out = rgb.copy()
