@@ -248,9 +248,39 @@ def _decontaminate(rgb: np.ndarray, mask: np.ndarray, px: int = SPILL_PX) -> np.
     return repainted
 
 
-def _finish(rgb: np.ndarray, mask: np.ndarray, grow_px: int) -> bytes:
+def _sharpen_alpha(mask: np.ndarray, strength: int) -> np.ndarray:
+    """Collapse a wide alpha ramp into a narrow one, pivoting on 50%.
+
+    A segmentation mask fades from opaque to transparent over many pixels — on a
+    real trouser cutout the soft band measured 45 px per row at the inner thigh
+    and 77 px at the hem. Nothing about the fabric is out of focus; the blur is
+    entirely in the alpha channel, and every viewer composites it as a smear.
+
+    Remapping alpha through a steep line centred on 0.5 keeps the 50% contour
+    exactly where it was, so the silhouette does not move or change width — only
+    the transition tightens. Measured on that cutout at strength 6: thigh
+    44.8 px -> 4.6 px, hem 77.2 px -> 11.6 px.
+
+    THIS IS DESTRUCTIVE ON SOFT SUBJECTS. Hair, lace, fur, chiffon and sequins
+    are genuinely semi-transparent at their edges; that partial alpha is real
+    detail, not blur, and this will quantise it into hard chunks. Only turn it
+    up on a hard-edged garment.
+    """
+    if strength <= 1:
+        return mask
+    a = mask.astype(np.float32) / 255.0
+    a = np.clip((a - 0.5) * float(strength) + 0.5, 0.0, 1.0)
+    return np.uint8(np.round(a * 255))
+
+
+def _finish(rgb: np.ndarray, mask: np.ndarray, grow_px: int, spill_px: int = SPILL_PX,
+            sharpen: int = 1) -> bytes:
     """Decontaminate the edge, apply one — and only one — erosion, then encode."""
-    rgb = _decontaminate(rgb, mask)
+    rgb = _decontaminate(rgb, mask, spill_px)
+    # Order matters: decontaminate first, so that the pixels the sharpener
+    # promotes from partial to opaque already carry real garment colour instead
+    # of the backdrop blend they were holding.
+    mask = _sharpen_alpha(mask, sharpen)
     if grow_px > 0:
         mask = cv2.erode(mask, np.ones((3, 3), np.uint8), iterations=grow_px)
     result = Image.fromarray(rgb).convert("RGBA")
@@ -278,9 +308,10 @@ def _subject_mask_and_rgb(image_bytes: bytes):
 
 
 @st.cache_data(show_spinner=False, max_entries=2)
-def subject_cutout(image_bytes: bytes, grow_px: int) -> bytes:
+def subject_cutout(image_bytes: bytes, grow_px: int, spill_px: int = SPILL_PX,
+                   sharpen: int = 1) -> bytes:
     rgb, mask = _subject_mask_and_rgb(image_bytes)
-    return _finish(rgb, mask, grow_px)
+    return _finish(rgb, mask, grow_px, spill_px, sharpen)
 
 
 # ---------------------------------------------------------------------------
@@ -361,9 +392,10 @@ def _garment_mask_and_rgb(image_bytes: bytes, repair: bool):
 
 
 @st.cache_data(show_spinner=False, max_entries=2)
-def garment_cutout(image_bytes: bytes, repair: bool, grow_px: int) -> bytes:
+def garment_cutout(image_bytes: bytes, repair: bool, grow_px: int,
+                   spill_px: int = SPILL_PX, sharpen: int = 1) -> bytes:
     rgb, mask = _garment_mask_and_rgb(image_bytes, repair)
-    return _finish(rgb, mask, grow_px)
+    return _finish(rgb, mask, grow_px, spill_px, sharpen)
 
 
 # ---------------------------------------------------------------------------
@@ -494,9 +526,10 @@ def chroma_alpha(img_array: np.ndarray, key_hex: str, tola: int, tolb: int) -> n
     return np.clip((distances - tola) / max(tolb - tola, 1), 0.0, 1.0)
 
 
-def chroma_cutout(img_array: np.ndarray, key_hex: str, tola: int, tolb: int, grow_px: int) -> bytes:
+def chroma_cutout(img_array: np.ndarray, key_hex: str, tola: int, tolb: int, grow_px: int,
+                  spill_px: int = SPILL_PX, sharpen: int = 1) -> bytes:
     alpha_f = chroma_alpha(img_array, key_hex, tola, tolb)
-    return _finish(img_array.copy(), np.uint8(alpha_f * 255), grow_px)
+    return _finish(img_array.copy(), np.uint8(alpha_f * 255), grow_px, spill_px, sharpen)
 
 
 # ---------------------------------------------------------------------------
@@ -587,6 +620,27 @@ with st.sidebar:
         with col_plus:
             st.button("+", on_click=step_fringe, args=(1,), width="stretch")
 
+        spill_px = st.slider(
+            "Halo width", 1, 8, SPILL_PX,
+            help="How far the backdrop's colour bled into the garment edge. Raise it "
+                 "if a coloured halo survives; on one real cutout the green edge went "
+                 "13.6% -> 3.9% -> 0.3% at widths 2, 3 and 6. Too high smears thin "
+                 "detail like straps, because it erodes further before sampling a "
+                 "trusted colour.",
+        )
+        sharpen = st.slider(
+            "Edge sharpness", 1, 8, 1,
+            help="1 = off. The mask fades from opaque to transparent over many pixels "
+                 "— 45 px per row at the inner thigh, 77 px at the hem on a real "
+                 "trouser cutout — and every viewer composites that fade as a blur. "
+                 "This tightens the fade without moving the silhouette. DESTRUCTIVE ON "
+                 "SOFT SUBJECTS: hair, lace, fur, chiffon and sequins are genuinely "
+                 "semi-transparent at the edge, and this chunks that real detail. Use "
+                 "it on hard-edged garments only.",
+        )
+        if sharpen > 1:
+            st.caption("⚠ Check hair, lace and sequin edges before you ship the file.")
+
         st.divider()
         selective = st.checkbox(
             "Selective cleanup",
@@ -650,13 +704,13 @@ with col2:
     try:
         with st.spinner("Extracting… the first run for each engine downloads its model."):
             if method == "Subject cutout (any photo)":
-                out_bytes = subject_cutout(image_bytes, grow_px)
+                out_bytes = subject_cutout(image_bytes, grow_px, spill_px, sharpen)
 
             elif method == "Garment only (needs a person)":
-                out_bytes = garment_cutout(image_bytes, repair_occlusion, grow_px)
+                out_bytes = garment_cutout(image_bytes, repair_occlusion, grow_px, spill_px, sharpen)
 
             elif method == "Chroma key (solid backdrop)":
-                out_bytes = chroma_cutout(img_array, key_color_hex, tola, tolb, grow_px)
+                out_bytes = chroma_cutout(img_array, key_color_hex, tola, tolb, grow_px, spill_px, sharpen)
 
             else:
                 # Erode ONCE, at the end. Eroding inside each branch and again on
@@ -671,7 +725,8 @@ with col2:
                 # shreds flat-lays guaranteed a shredded result.
                 rgb, subject_mask = _subject_mask_and_rgb(image_bytes)
                 chroma_mask = np.uint8(chroma_alpha(img_array, key_color_hex, tola, tolb) * 255)
-                out_bytes = _finish(rgb, np.minimum(subject_mask, chroma_mask), grow_px)
+                out_bytes = _finish(rgb, np.minimum(subject_mask, chroma_mask), grow_px,
+                                    spill_px, sharpen)
 
         if selective:
             raw = Image.open(io.BytesIO(out_bytes)).convert("RGBA")
