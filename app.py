@@ -34,6 +34,18 @@ st.set_page_config(
 if "fringe_val" not in st.session_state:
     st.session_state.fringe_val = 0
 
+# Selective-cleanup widgets are keyed so the Auto panel can write to them. They
+# are seeded here, once, rather than through each widget's value= argument:
+# passing both a default and a session-state value makes Streamlit warn and
+# discard one of them.
+for _key, _default in {
+    "sel_shadow": 25, "sel_trim": 0,
+    "sel_recolour": "Off", "sel_recolour_hex": "#1a1a1a", "sel_recolour_strength": 100,
+}.items():
+    st.session_state.setdefault(_key, _default)
+
+RECOLOUR_MODES = ["Off", "Neutralise cast", "Tint to colour"]
+
 
 def step_fringe(delta: int):
     st.session_state.fringe_val = max(0, min(5, st.session_state.fringe_val + delta))
@@ -467,9 +479,107 @@ def lasso_region(selection, shape, grid_w: int, grid_h: int) -> np.ndarray:
                       interpolation=cv2.INTER_NEAREST) > 0
 
 
-def selective_cleanup(png_bytes: bytes, key_hex: str, region: np.ndarray, shadow: int, trim: int) -> bytes:
-    """Trim shadow and border residue inside the selected region only."""
-    if (shadow <= 0 and trim <= 0) or region is None or not region.any():
+def _region_stats(rgb: np.ndarray, alpha: np.ndarray, region: np.ndarray, key_hex: str) -> dict:
+    """Measure what is actually wrong inside the selection.
+
+    Every number here is a count of pixels, not a judgement. The recommendation
+    built from them is shown to the user before anything is applied, because a
+    metric that cannot tell garment from background has already cost this project
+    once: ranking engines by "% of frame kept" picked chroma key, which had left
+    a green wash over the whole garment, over the near-perfect subject cutout.
+    """
+    key = np.array([int(key_hex.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4)], np.float32)
+    visible = region & (alpha > 10)
+    total = max(int(visible.sum()), 1)
+
+    chroma = rgb / (rgb.sum(-1, keepdims=True) + 1e-6)
+    key_chroma = key / (key.sum() + 1e-6)
+    hue_gap = np.linalg.norm(chroma - key_chroma, axis=-1) * 255
+    ratio = rgb.sum(-1) / (key.sum() + 1e-6)
+
+    # Backdrop-hue pixels ABOVE the brightness floor are shadow: the backdrop
+    # seen dimmer. The same hue BELOW it is fabric that happens to be dark, and
+    # cutting it is how black trousers went from 87.4% surviving to 6.0%.
+    shadowy = visible & (hue_gap < 40) & (ratio < 1.0) & (ratio > BRIGHTNESS_FLOOR)
+    # Spill is different: garment pixels carrying the backdrop's colour cast. It
+    # is a COLOUR defect, so trimming or cutting alpha is the wrong tool.
+    spill = visible & (hue_gap < 40) & (ratio <= BRIGHTNESS_FLOOR)
+    soft = region & (alpha > 10) & (alpha < 245)
+
+    gaps = hue_gap[shadowy]
+    return {
+        "visible": total,
+        "shadow_pct": 100.0 * int(shadowy.sum()) / total,
+        "spill_pct": 100.0 * int(spill.sum()) / total,
+        "soft_pct": 100.0 * int(soft.sum()) / total,
+        "shadow_gap_p75": float(np.percentile(gaps, 75)) if gaps.size else 0.0,
+    }
+
+
+def suggest_settings(stats: dict) -> dict:
+    """Turn the measurements into slider values. Deliberately conservative."""
+    shadow = 0
+    if stats["shadow_pct"] >= 1.0:
+        # Sit just above the 75th percentile of the hue gaps actually measured,
+        # so the bulk of what was detected is covered without opening the gate
+        # wider than this photo needs.
+        shadow = int(min(60, max(10, round(stats["shadow_gap_p75"] + 5))))
+    recolour = "Neutralise cast" if stats["spill_pct"] >= 3.0 else "Off"
+    # Trim is blunt and unrecoverable, so it is only suggested when there is a
+    # soft fringe left AND no colour defect that recolouring would fix better.
+    trim = 2 if (stats["soft_pct"] >= 12.0 and recolour == "Off") else 0
+    return {"shadow": shadow, "trim": trim, "recolour": recolour}
+
+
+def recolour_region(rgb: np.ndarray, alpha: np.ndarray, region: np.ndarray,
+                    mode: str, target_hex: str, strength: int) -> np.ndarray:
+    """Repaint colour inside the selection. Alpha is never touched.
+
+    Two different jobs:
+
+    "Neutralise cast" is the right tool for a stubborn coloured halo. It is the
+    same colour-grow used at the silhouette edge: take the nearest pixel that is
+    OUTSIDE the selection and solidly opaque, and copy its colour in. That is
+    real garment colour sampled from the same garment, so it matches weave and
+    lighting instead of flattening them.
+
+    "Tint to colour" is a product change, not a repair — a colourway. Each pixel
+    keeps its own luminance relative to the region mean, so folds, creases and
+    sheen survive; only the hue is replaced. Painting the region flat instead
+    would delete the fabric texture entirely.
+    """
+    if mode == "Off" or strength <= 0 or region is None or not region.any():
+        return rgb
+
+    out = rgb.copy()
+    target_area = region & (alpha > 10)
+    if not target_area.any():
+        return rgb
+    blend = np.clip(strength / 100.0, 0.0, 1.0)
+
+    if mode == "Neutralise cast":
+        donor = (~region) & (alpha > 245)
+        if not donor.any():
+            return rgb
+        indices = distance_transform_edt(~donor, return_indices=True)[1]
+        sampled = rgb[indices[0], indices[1]]
+        out[target_area] = (rgb[target_area] * (1 - blend) + sampled[target_area] * blend)
+        return out
+
+    target = np.array([int(target_hex.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4)], np.float32)
+    lum = rgb @ np.array([0.299, 0.587, 0.114], np.float32)
+    mean_lum = float(lum[target_area].mean()) or 1.0
+    scaled = np.clip(target[None, None, :] * (lum / mean_lum)[..., None], 0, 255)
+    out[target_area] = (rgb[target_area] * (1 - blend) + scaled[target_area] * blend)
+    return out
+
+
+def selective_cleanup(png_bytes: bytes, key_hex: str, region: np.ndarray, shadow: int, trim: int,
+                      recolour: str = "Off", recolour_hex: str = "#000000",
+                      recolour_strength: int = 100) -> bytes:
+    """Trim shadow and border residue, and recolour, inside the selection only."""
+    nothing_to_do = shadow <= 0 and trim <= 0 and recolour == "Off"
+    if nothing_to_do or region is None or not region.any():
         return png_bytes
 
     img = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
@@ -491,7 +601,11 @@ def selective_cleanup(png_bytes: bytes, key_hex: str, region: np.ndarray, shadow
         trimmed = cv2.erode(alpha, np.ones((3, 3), np.uint8), iterations=trim)
         alpha = np.where(region, trimmed, alpha)
 
-    out = Image.fromarray(np.dstack([arr[:, :, :3], alpha]).astype(np.uint8), "RGBA")
+    # Recolour last, against the alpha that survived the two steps above, so it
+    # never repaints pixels that are about to be cut away.
+    rgb = recolour_region(rgb, alpha, region, recolour, recolour_hex, recolour_strength)
+
+    out = Image.fromarray(np.dstack([rgb, alpha]).astype(np.uint8), "RGBA")
     buf = io.BytesIO()
     out.save(buf, format="PNG")
     return buf.getvalue()
@@ -669,18 +783,49 @@ with st.sidebar:
                 box_x = st.slider("Region \u2014 left / right %", 0, 100, (0, 100))
                 box_y = st.slider("Region \u2014 top / bottom %", 0, 100, (60, 100))
 
+            # The Auto panel measures the region and writes its suggestion here,
+            # then reruns. Adopting it must happen BEFORE the widgets exist \u2014
+            # Streamlit refuses to let a widget's value be set after it is drawn.
+            pending = st.session_state.pop("pending_auto", None)
+            if pending:
+                st.session_state["sel_shadow"] = pending["shadow"]
+                st.session_state["sel_trim"] = pending["trim"]
+                st.session_state["sel_recolour"] = pending["recolour"]
+
             shadow_strength = st.slider(
-                "Shadow removal", 0, 60, 25,
+                "Shadow removal", 0, 60, key="sel_shadow",
                 help="Cuts pixels inside the region that share the backdrop's hue but "
                      "are darker. Black fabric is unaffected \u2014 it is dark but neutral, "
                      "not a dark version of the backdrop. Raise until the shadow goes; "
                      "if real fabric starts disappearing, you have gone too far.",
             )
             extra_trim = st.slider(
-                "Extra trim (px)", 0, 6, 0,
+                "Extra trim (px)", 0, 6, key="sel_trim",
                 help="Blunt erosion inside the region only, for border residue that "
                      "isn't shadow.",
             )
+
+            recolour_mode = st.radio(
+                "Recolour", RECOLOUR_MODES, key="sel_recolour",
+                help="Repairs or replaces COLOUR inside the region. Alpha is never "
+                     "touched, so the silhouette cannot change. Use it when the defect "
+                     "is a tint rather than something that should be cut away \u2014 "
+                     "trimming a coloured halo removes garment, recolouring it does not.",
+            )
+            recolour_hex = "#1a1a1a"
+            recolour_strength = 100
+            if recolour_mode == "Tint to colour":
+                recolour_hex = st.color_picker("Target colour", key="sel_recolour_hex")
+                st.caption(
+                    "Each pixel keeps its own brightness, so folds and sheen survive "
+                    "\u2014 only the hue is replaced."
+                )
+            if recolour_mode != "Off":
+                recolour_strength = st.slider(
+                    "Recolour strength %", 0, 100, key="sel_recolour_strength",
+                    help="Blend against the original. Below 100 the old colour shows "
+                         "through, which is often what you want on a partial cast.",
+                )
 
 col1, col2 = st.columns(2, gap="large")
 
@@ -786,12 +931,48 @@ with col2:
             else:
                 region = box_region(shape, (box_x, box_y))
 
+            key_hex = detect_background_hex(img_array)
+
+            if region.any():
+                with st.expander("Auto — analyse this selection", expanded=False):
+                    pre = np.array(Image.open(io.BytesIO(out_bytes)).convert("RGBA"))
+                    stats = _region_stats(
+                        pre[:, :, :3].astype(np.float32), pre[:, :, 3], region, key_hex
+                    )
+                    tip = suggest_settings(stats)
+
+                    left, mid, right = st.columns(3)
+                    left.metric("Shadow", f"{stats['shadow_pct']:.1f}%",
+                                help="Backdrop hue, dimmer than the backdrop, bright "
+                                     "enough not to be dark fabric. Cuttable.")
+                    mid.metric("Colour cast", f"{stats['spill_pct']:.1f}%",
+                               help="Backdrop hue but too dark to be shadow — garment "
+                                    "carrying the backdrop's colour. Recolour, do not cut.")
+                    right.metric("Soft edge", f"{stats['soft_pct']:.1f}%",
+                                 help="Partly transparent pixels in the selection.")
+
+                    st.caption(
+                        f"Suggests shadow {tip['shadow']}, trim {tip['trim']} px, "
+                        f"recolour “{tip['recolour']}” over "
+                        f"{stats['visible']:,} visible pixels."
+                    )
+                    st.caption(
+                        "These are pixel counts, not a verdict — nothing is applied "
+                        "until you press the button, and the sliders stay yours afterwards."
+                    )
+                    if st.button("Apply suggestion", width="stretch"):
+                        st.session_state["pending_auto"] = tip
+                        st.rerun()
+
             out_bytes = selective_cleanup(
                 out_bytes,
-                detect_background_hex(img_array),
+                key_hex,
                 region,
                 shadow_strength,
                 extra_trim,
+                recolour_mode,
+                recolour_hex,
+                recolour_strength,
             )
 
         extracted_image = Image.open(io.BytesIO(out_bytes))
