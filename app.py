@@ -6,6 +6,17 @@ import streamlit as st
 from PIL import Image, ImageDraw
 from scipy.ndimage import binary_fill_holes, distance_transform_edt, label
 
+# Brush selection is optional. If the component is missing or incompatible with
+# the running Streamlit, the app falls back to rectangle sliders rather than
+# crashing — this project has already been taken down once by a dependency.
+try:
+    from streamlit_drawable_canvas import st_canvas
+
+    CANVAS_AVAILABLE = True
+except Exception:  # noqa: BLE001
+    st_canvas = None
+    CANVAS_AVAILABLE = False
+
 # ---------------------------------------------------------------------------
 # App Configuration & Session State
 # ---------------------------------------------------------------------------
@@ -366,23 +377,43 @@ def garment_cutout(image_bytes: bytes, repair: bool, grow_px: int) -> bytes:
 BRIGHTNESS_FLOOR = 0.45  # fraction of backdrop luminance below which it is fabric, not shadow
 
 
-def selective_cleanup(png_bytes: bytes, key_hex: str, box_pct, shadow: int, trim: int) -> bytes:
-    """Trim shadow and border residue inside one rectangle only."""
-    if shadow <= 0 and trim <= 0:
+def box_region(shape, box_pct) -> np.ndarray:
+    """Rectangle selection, as a boolean mask at image resolution."""
+    height, width = shape
+    (x0, x1), (y0, y1) = box_pct
+    region = np.zeros((height, width), bool)
+    region[
+        int(height * y0 / 100):max(int(height * y1 / 100), int(height * y0 / 100) + 1),
+        int(width * x0 / 100):max(int(width * x1 / 100), int(width * x0 / 100) + 1),
+    ] = True
+    return region
+
+
+def painted_region(canvas_rgba, shape) -> np.ndarray:
+    """Whatever the user brushed on the canvas, scaled back to full resolution.
+
+    st_canvas hands back an RGBA array of the strokes at display size. Any pixel
+    with alpha is painted, so the shape is arbitrary — the point of using it over
+    sliders.
+    """
+    if canvas_rgba is None:
+        return np.zeros(shape, bool)
+    painted = np.array(canvas_rgba)[:, :, 3] > 0
+    if not painted.any():
+        return np.zeros(shape, bool)
+    resized = cv2.resize(painted.astype(np.uint8), (shape[1], shape[0]), interpolation=cv2.INTER_NEAREST)
+    return resized > 0
+
+
+def selective_cleanup(png_bytes: bytes, key_hex: str, region: np.ndarray, shadow: int, trim: int) -> bytes:
+    """Trim shadow and border residue inside the selected region only."""
+    if (shadow <= 0 and trim <= 0) or region is None or not region.any():
         return png_bytes
 
     img = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
     arr = np.array(img)
     rgb = arr[:, :, :3].astype(np.float32)
     alpha = arr[:, :, 3]
-    height, width = alpha.shape
-
-    (x0, x1), (y0, y1) = box_pct
-    xs = slice(int(width * x0 / 100), max(int(width * x1 / 100), int(width * x0 / 100) + 1))
-    ys = slice(int(height * y0 / 100), max(int(height * y1 / 100), int(height * y0 / 100) + 1))
-
-    region = np.zeros_like(alpha, bool)
-    region[ys, xs] = True
 
     if shadow > 0:
         key = np.array([int(key_hex.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4)], np.float32)
@@ -530,12 +561,26 @@ with st.sidebar:
         selective = st.checkbox(
             "Selective cleanup",
             value=False,
-            help="Clean one rectangle only. For a drop shadow, which is not the "
+            help="Clean a chosen area only. For a drop shadow, which is not the "
                  "backdrop colour and so survives every other step in this app.",
         )
+        draw_mode = False
         if selective:
-            box_x = st.slider("Region \u2014 left / right %", 0, 100, (0, 100))
-            box_y = st.slider("Region \u2014 top / bottom %", 0, 100, (60, 100))
+            if CANVAS_AVAILABLE:
+                draw_mode = st.radio(
+                    "Selection",
+                    ["Brush on the result", "Rectangle sliders"],
+                    label_visibility="collapsed",
+                ) == "Brush on the result"
+            else:
+                st.caption("Brush selection needs `streamlit-drawable-canvas` in requirements.txt.")
+
+            if draw_mode:
+                brush_size = st.slider("Brush size", 5, 80, 30)
+            else:
+                box_x = st.slider("Region \u2014 left / right %", 0, 100, (0, 100))
+                box_y = st.slider("Region \u2014 top / bottom %", 0, 100, (60, 100))
+
             shadow_strength = st.slider(
                 "Shadow removal", 0, 60, 25,
                 help="Cuts pixels inside the region that share the backdrop's hue but "
@@ -554,8 +599,8 @@ col1, col2 = st.columns(2, gap="large")
 with col1:
     st.markdown('<div class="image-card-title">Source Image</div>', unsafe_allow_html=True)
     preview = original_image
-    if selective:
-        # Show the region, otherwise the sliders are guesswork.
+    if selective and not draw_mode:
+        # Show the rectangle, otherwise the sliders are guesswork.
         preview = original_image.copy()
         w, h = preview.size
         ImageDraw.Draw(preview).rectangle(
@@ -595,10 +640,40 @@ with col2:
                 out_bytes = _finish(rgb, np.minimum(subject_mask, chroma_mask), grow_px)
 
         if selective:
+            raw = Image.open(io.BytesIO(out_bytes)).convert("RGBA")
+            shape = (raw.size[1], raw.size[0])
+
+            if draw_mode:
+                # Draw ON the result, not the source — you can only see what
+                # needs erasing once the background is already gone.
+                st.caption("Paint over what should be erased.")
+                scale = min(1.0, 420 / raw.size[0])
+                display = raw.resize(
+                    (max(int(raw.size[0] * scale), 1), max(int(raw.size[1] * scale), 1)),
+                    Image.LANCZOS,
+                )
+                # Flatten onto mid-grey so both black and white garments read.
+                backdrop = Image.new("RGBA", display.size, (120, 120, 120, 255))
+                canvas = st_canvas(
+                    background_image=Image.alpha_composite(backdrop, display).convert("RGB"),
+                    height=display.size[1],
+                    width=display.size[0],
+                    drawing_mode="freedraw",
+                    stroke_width=brush_size,
+                    stroke_color="rgba(239, 68, 68, 0.6)",
+                    fill_color="rgba(0, 0, 0, 0)",
+                    key="cleanup_canvas",
+                )
+                region = painted_region(
+                    canvas.image_data if canvas is not None else None, shape
+                )
+            else:
+                region = box_region(shape, (box_x, box_y))
+
             out_bytes = selective_cleanup(
                 out_bytes,
                 detect_background_hex(img_array),
-                (box_x, box_y),
+                region,
                 shadow_strength,
                 extra_trim,
             )
