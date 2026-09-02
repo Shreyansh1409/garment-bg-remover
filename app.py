@@ -22,7 +22,7 @@ def step_fringe(delta: int):
     st.session_state.fringe_val = max(0, min(5, st.session_state.fringe_val + delta))
 
 # ---------------------------------------------------------------------------
-# UI Styling
+# UI Styling (Updated Transparency Grid)
 # ---------------------------------------------------------------------------
 st.markdown(
     """
@@ -40,6 +40,9 @@ st.markdown(
     .stButton > button:hover { background-color: #4338CA !important; }
     .stDownloadButton > button { background-color: #10B981 !important; color: white !important; border-radius: 8px !important; border: none !important; font-weight: 600 !important; width: 100%; margin-top: 0.75rem; }
     .stDownloadButton > button:hover { background-color: #059669 !important; }
+    .image-card-title { font-weight: 600; font-size: 0.9rem; margin-bottom: 0.75rem; text-transform: uppercase; opacity: 0.8; }
+    
+    /* White/Gray Transparency Grid */
     [data-testid="stImage"] {
         background-color: #ffffff !important;
         background-image:
@@ -50,7 +53,7 @@ st.markdown(
         background-size: 16px 16px !important;
         background-position: 0 0, 8px 0, 8px -8px, 0px 8px !important;
         border-radius: 8px;
-        border: 1px solid rgba(255, 255, 255, 0.1);
+        border: 1px solid rgba(128, 128, 128, 0.2);
     }
     </style>
     """, unsafe_allow_html=True
@@ -110,9 +113,8 @@ def load_ai_session():
     opts.enable_cpu_mem_arena = False
     opts.intra_op_num_threads = 1
     
-    # Map the list of classes into a dictionary by name
+    # Map the list of classes into a dictionary by name to prevent index errors
     session_dict = {cls.name(): cls for cls in sessions_class}
-    
     return session_dict["u2net_cloth_seg"]("u2net_cloth_seg", opts)
 
 def _mirror_fill(rgb: np.ndarray, garment: np.ndarray, occluded: np.ndarray):
@@ -260,17 +262,28 @@ with col2:
             if method == "Segformer (Pro Garment AI)":
                 out_bytes = segformer_cutout(image_bytes, grow_px)
                 extracted_image = Image.open(io.BytesIO(out_bytes))
+            
             elif method == "U2Net (Local Occlusion Repair)":
                 out_bytes = u2net_cloth_cutout(image_bytes, repair_occlusion, grow_px)
                 extracted_image = Image.open(io.BytesIO(out_bytes))
+            
             elif method == "Chroma Key (Studio Green)":
                 extracted_image = chroma_cutout(img_array, key_color_hex, tola, tolb, grow_px)
+            
             elif method == "Hybrid (AI + Chroma Key)":
-                ai_bytes = u2net_cloth_cutout(image_bytes, repair_occlusion, 0)
+                ai_bytes = u2net_cloth_cutout(image_bytes, repair_occlusion, grow_px)
                 ai_alpha = np.array(Image.open(io.BytesIO(ai_bytes)).split()[-1])
+                
                 chroma_img = chroma_cutout(img_array, key_color_hex, tola, tolb, grow_px)
                 chroma_alpha = np.array(chroma_img.split()[-1])
+                
+                # Combine masks mathematically
                 combined_alpha = np.minimum(ai_alpha, chroma_alpha)
+                
+                # Force active fringe erasure
+                if grow_px > 0:
+                    combined_alpha = cv2.erode(combined_alpha, np.ones((3, 3), np.uint8), iterations=grow_px)
+                    
                 extracted_image = chroma_img.copy()
                 extracted_image.putalpha(Image.fromarray(combined_alpha))
                 
