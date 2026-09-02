@@ -239,14 +239,19 @@ def _finish(rgb: np.ndarray, mask: np.ndarray, grow_px: int) -> bytes:
 # the trousers at 18.6% of frame but the corset at 0.2% — shredded. u2netp on
 # the same photo scored 99% of the garment with 0% background left behind.
 # ---------------------------------------------------------------------------
-@st.cache_data(show_spinner=False, max_entries=2)
-def subject_cutout(image_bytes: bytes, grow_px: int) -> bytes:
+def _subject_mask_and_rgb(image_bytes: bytes):
+    """Shared by the subject and hybrid paths so the model runs once."""
     from rembg import remove
 
     source = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     mask = remove(_shrink(source), session=load_ai_session(SUBJECT_MODEL), only_mask=True)
-    mask = np.array(mask.resize(source.size, Image.LANCZOS))
-    return _finish(np.array(source), mask, grow_px)
+    return np.array(source), np.array(mask.resize(source.size, Image.LANCZOS))
+
+
+@st.cache_data(show_spinner=False, max_entries=2)
+def subject_cutout(image_bytes: bytes, grow_px: int) -> bytes:
+    rgb, mask = _subject_mask_and_rgb(image_bytes)
+    return _finish(rgb, mask, grow_px)
 
 
 # ---------------------------------------------------------------------------
@@ -435,11 +440,11 @@ with st.sidebar:
 
     else:
         st.info(
-            "Intersects the garment mask with the chroma mask. It can only ever "
-            "remove pixels, never restore them, so the result is bounded by "
-            "whichever of the two is worse."
+            "Subject cutout, then anything still matching the key colour is "
+            "subtracted — for shadows or backdrop the AI kept. It can only remove "
+            "pixels, never restore them, so reach for it only when Subject cutout "
+            "leaves something behind."
         )
-        repair_occlusion = st.checkbox("Rebuild fabric behind arms", value=False)
         detected_hex = detect_background_hex(img_array)
         key_color_hex = st.color_picker("Key Color", detected_hex)
         tola = st.slider("Shadow Tolerance", 1, 50, 40)
@@ -478,9 +483,16 @@ with col2:
                 # Erode ONCE, at the end. Eroding inside each branch and again on
                 # the combined mask is a triple pass: at fringe=5 that took an
                 # 8 px strap to zero and ate 27% of the garment area.
-                rgb, garment_mask = _garment_mask_and_rgb(image_bytes, repair_occlusion)
+                # Intersect the SUBJECT mask, not the cloth mask. Measured against
+                # the reference silhouette on a green-screen flat-lay:
+                #   cloth_seg alone          6.7% of the garment punched away
+                #   min(cloth, chroma)       6.8%   <- what this used to be
+                #   min(subject, chroma)     0.8% holes, 0.0% background kept
+                # min() can only subtract, so intersecting with the engine that
+                # shreds flat-lays guaranteed a shredded result.
+                rgb, subject_mask = _subject_mask_and_rgb(image_bytes)
                 chroma_mask = np.uint8(chroma_alpha(img_array, key_color_hex, tola, tolb) * 255)
-                out_bytes = _finish(rgb, np.minimum(garment_mask, chroma_mask), grow_px)
+                out_bytes = _finish(rgb, np.minimum(subject_mask, chroma_mask), grow_px)
 
         extracted_image = Image.open(io.BytesIO(out_bytes))
         st.image(extracted_image, width="stretch")
