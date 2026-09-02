@@ -200,7 +200,7 @@ with st.sidebar:
     st.markdown('<div class="sidebar-header">Engine Settings</div>', unsafe_allow_html=True)
     st.error("⚠️ **Garments Only.** This tool explicitly deletes human skin, hair, and body parts.")
     
-    method = st.radio("Processing Engine", ["Segformer (Pro Garment AI)", "U2Net (Local Occlusion Repair)", "Chroma Key (Studio Green)"], label_visibility="collapsed")
+    method = st.radio("Processing Engine", ["Segformer (Pro Garment AI)", "U2Net (Local Occlusion Repair)", "Chroma Key (Studio Green)", "Hybrid (AI + Chroma Key)"], label_visibility="collapsed")
     st.markdown("---")
     
     if method == "U2Net (Local Occlusion Repair)":
@@ -209,6 +209,14 @@ with st.sidebar:
         
     elif method == "Chroma Key (Studio Green)":
         st.warning("Math-based background subtraction for solid colors.")
+        detected_hex = detect_background_hex(img_array)
+        key_color_hex = st.color_picker("Key Color", detected_hex)
+        tola = st.slider("Shadow Tolerance", 1, 50, 10)
+        tolb = st.slider("Highlight Tolerance", tola + 1, 120, 60)
+        
+    elif method == "Hybrid (AI + Chroma Key)":
+        st.info("⚡ **Combines U2Net AI with precise Chroma Keying.** Punches out enclosed background gaps and refines edges.")
+        repair_occlusion = st.checkbox("Rebuild fabric behind arms", value=False)
         detected_hex = detect_background_hex(img_array)
         key_color_hex = st.color_picker("Key Color", detected_hex)
         tola = st.slider("Shadow Tolerance", 1, 50, 10)
@@ -240,8 +248,16 @@ with col2:
             elif method == "U2Net (Local Occlusion Repair)":
                 out_bytes = u2net_cloth_cutout(image_bytes, repair_occlusion, grow_px)
                 extracted_image = Image.open(io.BytesIO(out_bytes))
-            else:
+            elif method == "Chroma Key (Studio Green)":
                 extracted_image = chroma_cutout(img_array, key_color_hex, tola, tolb, grow_px)
+            elif method == "Hybrid (AI + Chroma Key)":
+                ai_bytes = u2net_cloth_cutout(image_bytes, repair_occlusion, 0)
+                ai_alpha = np.array(Image.open(io.BytesIO(ai_bytes)).split()[-1])
+                chroma_img = chroma_cutout(img_array, key_color_hex, tola, tolb, grow_px)
+                chroma_alpha = np.array(chroma_img.split()[-1])
+                combined_alpha = np.minimum(ai_alpha, chroma_alpha)
+                extracted_image = chroma_img.copy()
+                extracted_image.putalpha(Image.fromarray(combined_alpha))
                 
         st.image(extracted_image, use_container_width=True)
         
