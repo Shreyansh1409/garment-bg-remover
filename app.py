@@ -6,40 +6,20 @@ import streamlit as st
 from PIL import Image, ImageDraw
 from scipy.ndimage import binary_fill_holes, distance_transform_edt, label
 
-# Brush selection is optional. If the component is missing or incompatible with
-# the running Streamlit, the app falls back to rectangle sliders rather than
-# crashing — this project has already been taken down once by a dependency.
-#
-# streamlit-drawable-canvas 0.9.3 calls streamlit.elements.image.image_to_url()
-# to serve its background. Streamlit removed that private helper, so the import
-# succeeds and the CALL fails with:
-#   module 'streamlit.elements.image' has no attribute 'image_to_url'
-# Guarding only the import therefore catches nothing. The shim below restores a
-# compatible function — a plain data URL, which needs no Streamlit internals —
-# and the call site is guarded separately.
+# Lasso selection uses plotly through st.plotly_chart(on_select=...), which is a
+# FIRST-PARTY Streamlit API. The previous attempt used streamlit-drawable-canvas
+# and failed three times running: its latest release still calls
+# streamlit.elements.image.image_to_url(), a private helper Streamlit deleted, and
+# each shim only exposed the next incompatibility. Its frontend is built against
+# an old component protocol and cannot be verified without a browser. plotly costs
+# 62 MB of build but 0 MB of RSS, because it imports lazily.
 try:
-    import base64
+    import plotly.graph_objects as go
 
-    import streamlit.elements.image as _st_image
-    from streamlit_drawable_canvas import st_canvas
-
-    if not hasattr(_st_image, "image_to_url"):
-
-        def _image_to_url(image, width, clamp, channels, output_format, image_id):
-            im = image if isinstance(image, Image.Image) else Image.fromarray(np.asarray(image))
-            im = im.convert("RGB")
-            if width and width > 0 and im.width != width:
-                im = im.resize((int(width), max(round(im.height * width / im.width), 1)), Image.LANCZOS)
-            buf = io.BytesIO()
-            im.save(buf, format="PNG")
-            return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
-
-        _st_image.image_to_url = _image_to_url
-
-    CANVAS_AVAILABLE = True
+    LASSO_AVAILABLE = True
 except Exception:  # noqa: BLE001
-    st_canvas = None
-    CANVAS_AVAILABLE = False
+    go = None
+    LASSO_AVAILABLE = False
 
 # ---------------------------------------------------------------------------
 # App Configuration & Session State
@@ -413,20 +393,28 @@ def box_region(shape, box_pct) -> np.ndarray:
     return region
 
 
-def painted_region(canvas_rgba, shape) -> np.ndarray:
-    """Whatever the user brushed on the canvas, scaled back to full resolution.
+def lasso_region(selection, shape, grid_w: int, grid_h: int) -> np.ndarray:
+    """Turn a lasso/box selection over the point grid into a full-resolution mask.
 
-    st_canvas hands back an RGBA array of the strokes at display size. Any pixel
-    with alpha is painted, so the shape is arbitrary — the point of using it over
-    sliders.
+    An invisible grid of points is drawn over the result; plotly returns the ones
+    inside the lasso. Points are emitted row-major, so a point's flat index gives
+    back its cell, and the low-resolution cell mask is then scaled up.
     """
-    if canvas_rgba is None:
+    points = (selection or {}).get("points", []) or []
+    if not points:
         return np.zeros(shape, bool)
-    painted = np.array(canvas_rgba)[:, :, 3] > 0
-    if not painted.any():
+
+    cells = np.zeros((grid_h, grid_w), bool)
+    for point in points:
+        index = point.get("point_index", point.get("pointIndex"))
+        if index is None or index >= grid_w * grid_h:
+            continue
+        cells[index // grid_w, index % grid_w] = True
+
+    if not cells.any():
         return np.zeros(shape, bool)
-    resized = cv2.resize(painted.astype(np.uint8), (shape[1], shape[0]), interpolation=cv2.INTER_NEAREST)
-    return resized > 0
+    return cv2.resize(cells.astype(np.uint8), (shape[1], shape[0]),
+                      interpolation=cv2.INTER_NEAREST) > 0
 
 
 def selective_cleanup(png_bytes: bytes, key_hex: str, region: np.ndarray, shadow: int, trim: int) -> bytes:
@@ -590,17 +578,21 @@ with st.sidebar:
         )
         draw_mode = False
         if selective:
-            if CANVAS_AVAILABLE:
+            if LASSO_AVAILABLE:
                 draw_mode = st.radio(
                     "Selection",
-                    ["Brush on the result", "Rectangle sliders"],
+                    ["Lasso on the result", "Rectangle sliders"],
                     label_visibility="collapsed",
-                ) == "Brush on the result"
+                ) == "Lasso on the result"
             else:
-                st.caption("Brush selection needs `streamlit-drawable-canvas` in requirements.txt.")
+                st.caption("Lasso selection needs `plotly` in requirements.txt.")
 
             if draw_mode:
-                brush_size = st.slider("Brush size", 5, 80, 30)
+                lasso_detail = st.select_slider(
+                    "Selection detail", [40, 60, 90, 130], value=90,
+                    help="Grid resolution behind the lasso. Higher follows the "
+                         "outline more closely and is slower to draw.",
+                )
             else:
                 box_x = st.slider("Region \u2014 left / right %", 0, 100, (0, 100))
                 box_y = st.slider("Region \u2014 top / bottom %", 0, 100, (60, 100))
@@ -668,38 +660,56 @@ with col2:
             shape = (raw.size[1], raw.size[0])
 
             if draw_mode:
-                # Draw ON the result, not the source — you can only see what
+                # Select ON the result, not the source — you can only see what
                 # needs erasing once the background is already gone.
-                st.caption("Paint over what should be erased.")
-                scale = min(1.0, 420 / raw.size[0])
-                display = raw.resize(
-                    (max(int(raw.size[0] * scale), 1), max(int(raw.size[1] * scale), 1)),
-                    Image.LANCZOS,
+                st.caption("Lasso around what should be erased, then it is applied below.")
+                grid_w = int(lasso_detail)
+                grid_h = max(int(grid_w * raw.size[1] / raw.size[0]), 1)
+
+                # Invisible, selectable grid over the image. Row-major order is
+                # what lets lasso_region() map a point index back to a cell.
+                ys_grid, xs_grid = np.mgrid[0:grid_h, 0:grid_w]
+                figure = go.Figure(
+                    go.Scattergl(
+                        x=((xs_grid.ravel() + 0.5) * raw.size[0] / grid_w),
+                        y=((ys_grid.ravel() + 0.5) * raw.size[1] / grid_h),
+                        mode="markers",
+                        marker=dict(size=6, opacity=0),
+                        hoverinfo="skip",
+                        showlegend=False,
+                    )
                 )
-                # Flatten onto mid-grey so both black and white garments read.
-                backdrop = Image.new("RGBA", display.size, (120, 120, 120, 255))
-                # Guarded at the CALL, not just the import: the component can
-                # import cleanly and still fail against a newer Streamlit.
-                try:
-                    canvas = st_canvas(
-                        background_image=Image.alpha_composite(backdrop, display).convert("RGB"),
-                        height=display.size[1],
-                        width=display.size[0],
-                        drawing_mode="freedraw",
-                        stroke_width=brush_size,
-                        stroke_color="rgba(239, 68, 68, 0.6)",
-                        fill_color="rgba(0, 0, 0, 0)",
-                        key="cleanup_canvas",
+                backdrop = Image.new("RGBA", raw.size, (120, 120, 120, 255))
+                figure.add_layout_image(
+                    dict(
+                        source=Image.alpha_composite(backdrop, raw).convert("RGB"),
+                        xref="x", yref="y", x=0, y=0,
+                        sizex=raw.size[0], sizey=raw.size[1],
+                        sizing="stretch", layer="below",
                     )
-                    region = painted_region(
-                        canvas.image_data if canvas is not None else None, shape
-                    )
-                except Exception as canvas_error:  # noqa: BLE001
-                    st.warning(
-                        f"Brush unavailable ({canvas_error}). Switch Selection to "
-                        "\"Rectangle sliders\" — the cleanup itself works either way."
-                    )
-                    region = np.zeros(shape, bool)
+                )
+                figure.update_xaxes(visible=False, range=[0, raw.size[0]])
+                figure.update_yaxes(
+                    visible=False, range=[raw.size[1], 0],
+                    scaleanchor="x", scaleratio=1,
+                )
+                figure.update_layout(
+                    dragmode="lasso",
+                    margin=dict(l=0, r=0, t=0, b=0),
+                    height=460,
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                )
+                event = st.plotly_chart(
+                    figure,
+                    use_container_width=True,
+                    on_select="rerun",
+                    selection_mode=("lasso", "box"),
+                    key="cleanup_lasso",
+                )
+                region = lasso_region(
+                    (event or {}).get("selection"), shape, grid_w, grid_h
+                )
             else:
                 region = box_region(shape, (box_x, box_y))
 
