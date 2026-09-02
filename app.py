@@ -230,8 +230,22 @@ def _decontaminate(rgb: np.ndarray, mask: np.ndarray, px: int = SPILL_PX) -> np.
     core = cv2.erode((mask > 127).astype(np.uint8), np.ones((3, 3), np.uint8), iterations=px)
     if not core.any():
         return rgb
-    _, indices = distance_transform_edt(1 - core, return_indices=True)
-    return np.where(core[..., None].astype(bool), rgb, rgb[indices[0], indices[1]])
+
+    distance, indices = distance_transform_edt(1 - core, return_indices=True)
+
+    # Repaint ONLY a narrow band outside the core. The nearest-core lookup is
+    # defined everywhere, so applying it to the whole frame fills the entire
+    # transparent background with rays of garment colour radiating from the
+    # silhouette. That is invisible while alpha is respected — and lands as a
+    # streaked mess the moment anything downstream flattens the PNG or drops the
+    # alpha channel, which is how these files reach a try-on API or a CMS.
+    # Every VISIBLE pixel outside the core, whatever the halo's width — a fixed
+    # band was tried at px+2 and let edge-green back up from 6.7% to 15.6%,
+    # because the kept-backdrop halo runs to ~9px on some photos.
+    band = (distance > 0) & (mask > 0)
+    repainted = rgb.copy()
+    repainted[band] = rgb[indices[0][band], indices[1][band]]
+    return repainted
 
 
 def _finish(rgb: np.ndarray, mask: np.ndarray, grow_px: int) -> bytes:
@@ -378,7 +392,11 @@ def garment_cutout(image_bytes: bytes, repair: bool, grow_px: int) -> bytes:
 # Applied to the finished PNG rather than inside the cached engines, so dragging
 # these sliders re-runs a few array ops instead of the model.
 # ---------------------------------------------------------------------------
-BRIGHTNESS_FLOOR = 0.45  # fraction of backdrop luminance below which it is fabric, not shadow
+# Swept against both failure cases on real photos. Below 0.30 the garment itself
+# starts going (88.5% -> 83.6% -> 66.0% at 0.25); at 0.45 a real green shadow
+# measured at ratio 0.44 sat just under the gate and survived. 0.35 clears more
+# shadow while black satin on a grey sweep stays at 87.4%, unchanged.
+BRIGHTNESS_FLOOR = 0.35
 
 
 def box_region(shape, box_pct) -> np.ndarray:
