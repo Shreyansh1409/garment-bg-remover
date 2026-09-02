@@ -9,8 +9,32 @@ from scipy.ndimage import binary_fill_holes, distance_transform_edt, label
 # Brush selection is optional. If the component is missing or incompatible with
 # the running Streamlit, the app falls back to rectangle sliders rather than
 # crashing — this project has already been taken down once by a dependency.
+#
+# streamlit-drawable-canvas 0.9.3 calls streamlit.elements.image.image_to_url()
+# to serve its background. Streamlit removed that private helper, so the import
+# succeeds and the CALL fails with:
+#   module 'streamlit.elements.image' has no attribute 'image_to_url'
+# Guarding only the import therefore catches nothing. The shim below restores a
+# compatible function — a plain data URL, which needs no Streamlit internals —
+# and the call site is guarded separately.
 try:
+    import base64
+
+    import streamlit.elements.image as _st_image
     from streamlit_drawable_canvas import st_canvas
+
+    if not hasattr(_st_image, "image_to_url"):
+
+        def _image_to_url(image, width, clamp, channels, output_format, image_id):
+            im = image if isinstance(image, Image.Image) else Image.fromarray(np.asarray(image))
+            im = im.convert("RGB")
+            if width and width > 0 and im.width != width:
+                im = im.resize((int(width), max(round(im.height * width / im.width), 1)), Image.LANCZOS)
+            buf = io.BytesIO()
+            im.save(buf, format="PNG")
+            return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+
+        _st_image.image_to_url = _image_to_url
 
     CANVAS_AVAILABLE = True
 except Exception:  # noqa: BLE001
@@ -654,19 +678,28 @@ with col2:
                 )
                 # Flatten onto mid-grey so both black and white garments read.
                 backdrop = Image.new("RGBA", display.size, (120, 120, 120, 255))
-                canvas = st_canvas(
-                    background_image=Image.alpha_composite(backdrop, display).convert("RGB"),
-                    height=display.size[1],
-                    width=display.size[0],
-                    drawing_mode="freedraw",
-                    stroke_width=brush_size,
-                    stroke_color="rgba(239, 68, 68, 0.6)",
-                    fill_color="rgba(0, 0, 0, 0)",
-                    key="cleanup_canvas",
-                )
-                region = painted_region(
-                    canvas.image_data if canvas is not None else None, shape
-                )
+                # Guarded at the CALL, not just the import: the component can
+                # import cleanly and still fail against a newer Streamlit.
+                try:
+                    canvas = st_canvas(
+                        background_image=Image.alpha_composite(backdrop, display).convert("RGB"),
+                        height=display.size[1],
+                        width=display.size[0],
+                        drawing_mode="freedraw",
+                        stroke_width=brush_size,
+                        stroke_color="rgba(239, 68, 68, 0.6)",
+                        fill_color="rgba(0, 0, 0, 0)",
+                        key="cleanup_canvas",
+                    )
+                    region = painted_region(
+                        canvas.image_data if canvas is not None else None, shape
+                    )
+                except Exception as canvas_error:  # noqa: BLE001
+                    st.warning(
+                        f"Brush unavailable ({canvas_error}). Switch Selection to "
+                        "\"Rectangle sliders\" — the cleanup itself works either way."
+                    )
+                    region = np.zeros(shape, bool)
             else:
                 region = box_region(shape, (box_x, box_y))
 
