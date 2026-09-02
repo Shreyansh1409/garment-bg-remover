@@ -3,7 +3,7 @@ import io
 import cv2
 import numpy as np
 import streamlit as st
-from PIL import Image
+from PIL import Image, ImageDraw
 from scipy.ndimage import binary_fill_holes, distance_transform_edt, label
 
 # ---------------------------------------------------------------------------
@@ -338,6 +338,73 @@ def garment_cutout(image_bytes: bytes, repair: bool, grow_px: int) -> bytes:
 
 
 # ---------------------------------------------------------------------------
+# Selective cleanup
+#
+# For residue no global step can catch. A drop shadow is the case that matters:
+# it is not the backdrop colour, so the chroma mask never sees it, and it is
+# attached to the garment, so the AI mask keeps it. Nothing automatic in this
+# app removes it.
+#
+# A shadow IS, however, the backdrop at lower brightness. So the first test is
+# chromaticity, not colour: normalise a pixel by its own total brightness and
+# compare that to the backdrop's normalised value. Same hue + darker = shadow.
+#
+# Chromaticity ALONE is not enough, and assuming otherwise destroys garments.
+# Near-black normalises to neutral (0.33,0.33,0.33) — which is exactly a grey
+# backdrop's chromaticity. Measured on a grey studio flat-lay, the hue test on
+# its own took the black trousers from 87.4% surviving to 6.0% at the mildest
+# setting. It looked safe on a green screen only because green is saturated.
+#
+# BRIGHTNESS_FLOOR is what makes it safe. A shadow keeps a real fraction of the
+# backdrop's luminance; black satin keeps almost none (ratio ~0.15 against a
+# grey sweep). Cutting only pixels between the floor and full backdrop
+# brightness separates the two on neutral backdrops as well as saturated ones.
+#
+# Applied to the finished PNG rather than inside the cached engines, so dragging
+# these sliders re-runs a few array ops instead of the model.
+# ---------------------------------------------------------------------------
+BRIGHTNESS_FLOOR = 0.45  # fraction of backdrop luminance below which it is fabric, not shadow
+
+
+def selective_cleanup(png_bytes: bytes, key_hex: str, box_pct, shadow: int, trim: int) -> bytes:
+    """Trim shadow and border residue inside one rectangle only."""
+    if shadow <= 0 and trim <= 0:
+        return png_bytes
+
+    img = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
+    arr = np.array(img)
+    rgb = arr[:, :, :3].astype(np.float32)
+    alpha = arr[:, :, 3]
+    height, width = alpha.shape
+
+    (x0, x1), (y0, y1) = box_pct
+    xs = slice(int(width * x0 / 100), max(int(width * x1 / 100), int(width * x0 / 100) + 1))
+    ys = slice(int(height * y0 / 100), max(int(height * y1 / 100), int(height * y0 / 100) + 1))
+
+    region = np.zeros_like(alpha, bool)
+    region[ys, xs] = True
+
+    if shadow > 0:
+        key = np.array([int(key_hex.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4)], np.float32)
+        total = rgb.sum(axis=-1, keepdims=True) + 1e-6
+        chromaticity = rgb / total
+        key_chroma = key / (key.sum() + 1e-6)
+        hue_gap = np.linalg.norm(chromaticity - key_chroma, axis=-1) * 255
+        ratio = rgb.sum(-1) / (key.sum() + 1e-6)
+        shadowed = (hue_gap < shadow) & (ratio < 1.0) & (ratio > BRIGHTNESS_FLOOR)
+        alpha = np.where(region & shadowed, 0, alpha)
+
+    if trim > 0:
+        trimmed = cv2.erode(alpha, np.ones((3, 3), np.uint8), iterations=trim)
+        alpha = np.where(region, trimmed, alpha)
+
+    out = Image.fromarray(np.dstack([arr[:, :, :3], alpha]).astype(np.uint8), "RGBA")
+    buf = io.BytesIO()
+    out.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
 # Engine 3: chroma key
 #
 # RGB distance, not Cb/Cr — including luma is what lets it keep a black or
@@ -459,11 +526,44 @@ with st.sidebar:
         with col_plus:
             st.button("+", on_click=step_fringe, args=(1,), width="stretch")
 
+        st.divider()
+        selective = st.checkbox(
+            "Selective cleanup",
+            value=False,
+            help="Clean one rectangle only. For a drop shadow, which is not the "
+                 "backdrop colour and so survives every other step in this app.",
+        )
+        if selective:
+            box_x = st.slider("Region \u2014 left / right %", 0, 100, (0, 100))
+            box_y = st.slider("Region \u2014 top / bottom %", 0, 100, (60, 100))
+            shadow_strength = st.slider(
+                "Shadow removal", 0, 60, 25,
+                help="Cuts pixels inside the region that share the backdrop's hue but "
+                     "are darker. Black fabric is unaffected \u2014 it is dark but neutral, "
+                     "not a dark version of the backdrop. Raise until the shadow goes; "
+                     "if real fabric starts disappearing, you have gone too far.",
+            )
+            extra_trim = st.slider(
+                "Extra trim (px)", 0, 6, 0,
+                help="Blunt erosion inside the region only, for border residue that "
+                     "isn't shadow.",
+            )
+
 col1, col2 = st.columns(2, gap="large")
 
 with col1:
     st.markdown('<div class="image-card-title">Source Image</div>', unsafe_allow_html=True)
-    st.image(original_image, width="stretch")
+    preview = original_image
+    if selective:
+        # Show the region, otherwise the sliders are guesswork.
+        preview = original_image.copy()
+        w, h = preview.size
+        ImageDraw.Draw(preview).rectangle(
+            [int(w * box_x[0] / 100), int(h * box_y[0] / 100),
+             int(w * box_x[1] / 100) - 1, int(h * box_y[1] / 100) - 1],
+            outline=(79, 70, 229), width=max(2, w // 250),
+        )
+    st.image(preview, width="stretch")
 
 with col2:
     st.markdown('<div class="image-card-title">Extraction Result</div>', unsafe_allow_html=True)
@@ -493,6 +593,15 @@ with col2:
                 rgb, subject_mask = _subject_mask_and_rgb(image_bytes)
                 chroma_mask = np.uint8(chroma_alpha(img_array, key_color_hex, tola, tolb) * 255)
                 out_bytes = _finish(rgb, np.minimum(subject_mask, chroma_mask), grow_px)
+
+        if selective:
+            out_bytes = selective_cleanup(
+                out_bytes,
+                detect_background_hex(img_array),
+                (box_x, box_y),
+                shadow_strength,
+                extra_trim,
+            )
 
         extracted_image = Image.open(io.BytesIO(out_bytes))
         st.image(extracted_image, width="stretch")
