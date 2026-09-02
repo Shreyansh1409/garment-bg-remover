@@ -10,8 +10,8 @@ from scipy.ndimage import binary_fill_holes, distance_transform_edt, label
 # ---------------------------------------------------------------------------
 st.set_page_config(
     layout="wide",
-    page_title="Garment Extractor Pro",
-    page_icon="✂️",
+    page_title="TexAI Extractor Pro",
+    page_icon="✨",
     initial_sidebar_state="expanded"
 )
 
@@ -22,25 +22,119 @@ def step_fringe(delta: int):
     st.session_state.fringe_val = max(0, min(5, st.session_state.fringe_val + delta))
 
 # ---------------------------------------------------------------------------
-# UI Styling (Updated Transparency Grid)
+# Modern App CSS Styling (Dark Studio Theme)
 # ---------------------------------------------------------------------------
 st.markdown(
     """
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-    html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
-    .block-container { padding-top: 2rem !important; max-width: 1400px; }
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+    
+    html, body, [class*="css"] { 
+        font-family: 'Inter', sans-serif; 
+    }
+    
+    /* Base App Theme */
+    .stApp {
+        background-color: #0b0f19;
+    }
+    
+    /* Layout Spacing */
+    .block-container { 
+        padding-top: 2rem !important; 
+        max-width: 1400px; 
+    }
     header { visibility: hidden; }
     footer { visibility: hidden; }
-    .app-header { margin-bottom: 2rem; padding-bottom: 1rem; border-bottom: 1px solid rgba(128, 128, 128, 0.2); }
-    .app-title { font-weight: 700; font-size: 2.25rem; margin-bottom: 0.25rem; }
-    .app-subtitle { font-size: 1rem; opacity: 0.7; }
-    .sidebar-header { font-weight: 600; font-size: 1.1rem; margin-top: 1rem; margin-bottom: 0.5rem; }
-    .stButton > button { background-color: #4F46E5 !important; color: white !important; border-radius: 8px !important; border: none !important; font-weight: 500 !important; width: 100%; }
-    .stButton > button:hover { background-color: #4338CA !important; }
-    .stDownloadButton > button { background-color: #10B981 !important; color: white !important; border-radius: 8px !important; border: none !important; font-weight: 600 !important; width: 100%; margin-top: 0.75rem; }
-    .stDownloadButton > button:hover { background-color: #059669 !important; }
-    .image-card-title { font-weight: 600; font-size: 0.9rem; margin-bottom: 0.75rem; text-transform: uppercase; opacity: 0.8; }
+    
+    /* Header Typography */
+    .app-header { 
+        margin-bottom: 2.5rem; 
+        padding-bottom: 1.5rem; 
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08); 
+    }
+    .app-title { 
+        font-weight: 700; 
+        font-size: 2.8rem; 
+        letter-spacing: -0.02em; 
+        margin-bottom: 0.25rem;
+        background: linear-gradient(90deg, #ffffff 0%, #a5b4fc 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+    }
+    .app-subtitle { 
+        font-size: 1.05rem; 
+        color: #9ca3af; 
+        font-weight: 400;
+    }
+    
+    /* Sidebar Styling */
+    [data-testid="stSidebar"] {
+        background-color: #111827;
+        border-right: 1px solid rgba(255, 255, 255, 0.05);
+    }
+    .sidebar-header { 
+        font-weight: 600; 
+        font-size: 0.85rem; 
+        color: #9ca3af;
+        text-transform: uppercase; 
+        letter-spacing: 0.05em;
+        margin: 1.5rem 0 0.75rem 0; 
+    }
+    
+    /* Primary Buttons */
+    .stButton > button { 
+        background: linear-gradient(135deg, #4f46e5 0%, #4338ca 100%) !important;
+        color: white !important; 
+        border-radius: 12px !important; 
+        border: none !important; 
+        font-weight: 500 !important; 
+        padding: 0.6rem 1.2rem !important;
+        transition: all 0.2s ease !important;
+        box-shadow: 0 4px 12px rgba(79, 70, 229, 0.2) !important;
+    }
+    .stButton > button:hover { 
+        transform: translateY(-2px);
+        box-shadow: 0 6px 16px rgba(79, 70, 229, 0.4) !important;
+    }
+    
+    /* Download Buttons */
+    .stDownloadButton > button { 
+        background: linear-gradient(135deg, #10b981 0%, #059669 100%) !important;
+        color: white !important; 
+        border-radius: 12px !important; 
+        border: none !important; 
+        font-weight: 600 !important; 
+        padding: 0.8rem 1.2rem !important;
+        margin-top: 1rem;
+        transition: all 0.2s ease !important;
+        box-shadow: 0 4px 12px rgba(16, 185, 129, 0.2) !important;
+    }
+    .stDownloadButton > button:hover { 
+        transform: translateY(-2px);
+        box-shadow: 0 6px 16px rgba(16, 185, 129, 0.4) !important;
+    }
+    
+    /* Image Cards */
+    .image-card-title { 
+        font-weight: 600; 
+        font-size: 0.85rem; 
+        color: #9ca3af;
+        margin-bottom: 0.75rem; 
+        text-transform: uppercase; 
+        letter-spacing: 0.05em;
+    }
+    
+    /* Upload Dropzone */
+    [data-testid="stFileUploaderDropzone"] { 
+        border-radius: 16px; 
+        border: 2px dashed rgba(255, 255, 255, 0.15); 
+        background-color: rgba(255, 255, 255, 0.02);
+        transition: all 0.3s ease;
+    }
+    [data-testid="stFileUploaderDropzone"]:hover { 
+        border-color: #4f46e5; 
+        background-color: rgba(79, 70, 229, 0.05);
+    }
     
     /* White/Gray Transparency Grid */
     [data-testid="stImage"] {
@@ -52,8 +146,10 @@ st.markdown(
             linear-gradient(135deg, transparent 75%, #ececec 75%) !important;
         background-size: 16px 16px !important;
         background-position: 0 0, 8px 0, 8px -8px, 0px 8px !important;
-        border-radius: 8px;
-        border: 1px solid rgba(128, 128, 128, 0.2);
+        border-radius: 12px;
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+        overflow: hidden;
     }
     </style>
     """, unsafe_allow_html=True
@@ -84,7 +180,7 @@ def segformer_cutout(image_bytes: bytes, grow_px: int) -> bytes:
     upsampled_logits = nn.functional.interpolate(logits, size=source_img.size[::-1], mode="bilinear", align_corners=False)
     pred_seg = upsampled_logits.argmax(dim=1)[0].numpy()
     
-    clothing_labels = [4, 5, 6, 7] # Upper-clothes, Skirt, Pants, Dress
+    clothing_labels = [4, 5, 6, 7]
     garment_mask_arr = np.isin(pred_seg, clothing_labels).astype(np.uint8) * 255
     
     if grow_px > 0:
@@ -113,7 +209,6 @@ def load_ai_session():
     opts.enable_cpu_mem_arena = False
     opts.intra_op_num_threads = 1
     
-    # Map the list of classes into a dictionary by name to prevent index errors
     session_dict = {cls.name(): cls for cls in sessions_class}
     return session_dict["u2net_cloth_seg"]("u2net_cloth_seg", opts)
 
@@ -202,7 +297,7 @@ def chroma_cutout(img_array: np.ndarray, key_hex: str, tola: int, tolb: int, gro
 # ---------------------------------------------------------------------------
 # App Interface
 # ---------------------------------------------------------------------------
-st.markdown('<div class="app-header"><div class="app-title">Garment Extractor Pro</div><div class="app-subtitle">Strict Garment Isolation. Designed to automatically delete human subjects.</div></div>', unsafe_allow_html=True)
+st.markdown('<div class="app-header"><div class="app-title">TexAI Extractor</div><div class="app-subtitle">High-Fidelity Garment Isolation Engine. Designed to instantly generate clean catalog assets.</div></div>', unsafe_allow_html=True)
 
 uploaded_file = st.file_uploader("Upload product photo to begin", type=["png", "jpg", "jpeg"], label_visibility="collapsed")
 if uploaded_file is None:
@@ -214,7 +309,7 @@ original_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
 img_array = np.array(original_image)
 
 with st.sidebar:
-    st.markdown('<div class="sidebar-header">Engine Settings</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sidebar-header">Extraction Engine</div>', unsafe_allow_html=True)
     st.error("⚠️ **Garments Only.** This tool explicitly deletes human skin, hair, and body parts.")
     
     method = st.radio("Processing Engine", ["Segformer (Pro Garment AI)", "U2Net (Local Occlusion Repair)", "Chroma Key (Studio Green)", "Hybrid (AI + Chroma Key)"], label_visibility="collapsed")
@@ -232,7 +327,7 @@ with st.sidebar:
         tolb = st.slider("Highlight Tolerance", tola + 1, 120, 60)
         
     elif method == "Hybrid (AI + Chroma Key)":
-        st.info("⚡ **Combines U2Net AI with precise Chroma Keying.** Punches out enclosed background gaps and refines edges.")
+        st.info("⚡ **Combines AI with precise Chroma math.** Punches out enclosed background gaps and refines edges.")
         repair_occlusion = st.checkbox("Rebuild fabric behind arms", value=False)
         detected_hex = detect_background_hex(img_array)
         key_color_hex = st.color_picker("Key Color", detected_hex)
@@ -241,9 +336,9 @@ with st.sidebar:
         
     with st.expander("Edge Cleanup", expanded=True):
         col_min, col_slide, col_plus = st.columns([1, 4, 1])
-        with col_min: st.button("−", on_click=step_fringe, args=(-1,))
+        with col_min: st.button("−", on_click=step_fringe, args=(-1,), width="stretch")
         with col_slide: grow_px = st.slider("Fringe", 0, 5, key="fringe_val", label_visibility="collapsed")
-        with col_plus: st.button("+", on_click=step_fringe, args=(1,))
+        with col_plus: st.button("+", on_click=step_fringe, args=(1,), width="stretch")
 
 # ---------------------------------------------------------------------------
 # Processing
@@ -252,7 +347,7 @@ col1, col2 = st.columns(2, gap="large")
 
 with col1:
     st.markdown('<div class="image-card-title">Source Image</div>', unsafe_allow_html=True)
-    st.image(original_image, use_container_width=True)
+    st.image(original_image, width="stretch")
 
 with col2:
     st.markdown('<div class="image-card-title">Extraction Result</div>', unsafe_allow_html=True)
@@ -277,21 +372,19 @@ with col2:
                 chroma_img = chroma_cutout(img_array, key_color_hex, tola, tolb, grow_px)
                 chroma_alpha = np.array(chroma_img.split()[-1])
                 
-                # Combine masks mathematically
                 combined_alpha = np.minimum(ai_alpha, chroma_alpha)
                 
-                # Force active fringe erasure
                 if grow_px > 0:
                     combined_alpha = cv2.erode(combined_alpha, np.ones((3, 3), np.uint8), iterations=grow_px)
                     
                 extracted_image = chroma_img.copy()
                 extracted_image.putalpha(Image.fromarray(combined_alpha))
                 
-        st.image(extracted_image, use_container_width=True)
+        st.image(extracted_image, width="stretch")
         
         buf = io.BytesIO()
         extracted_image.save(buf, format="PNG")
-        st.download_button("↓ Export Transparent Garment", data=buf.getvalue(), file_name="garment_asset.png", mime="image/png")
+        st.download_button("↓ Export Transparent Garment", data=buf.getvalue(), file_name="garment_asset.png", mime="image/png", width="stretch")
             
     except Exception as exc: 
         st.error(f"Processing Error: {exc}")
