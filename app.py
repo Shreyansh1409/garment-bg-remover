@@ -40,8 +40,18 @@ st.markdown(
     .stButton > button:hover { background-color: #4338CA !important; }
     .stDownloadButton > button { background-color: #10B981 !important; color: white !important; border-radius: 8px !important; border: none !important; font-weight: 600 !important; width: 100%; margin-top: 0.75rem; }
     .stDownloadButton > button:hover { background-color: #059669 !important; }
-    [data-testid="stImage"] { background-image: linear-gradient(45deg, #e5e5e5 25%, transparent 25%), linear-gradient(135deg, #e5e5e5 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #e5e5e5 75%), linear-gradient(135deg, transparent 75%, #e5e5e5 75%); background-size: 20px 20px; background-position: 0 0, 10px 0, 10px -10px, 0px 10px; border-radius: 8px; border: 1px solid rgba(128, 128, 128, 0.2); }
-    .image-card-title { font-weight: 600; font-size: 0.9rem; margin-bottom: 0.75rem; text-transform: uppercase; opacity: 0.8; }
+    [data-testid="stImage"] {
+        background-color: #ffffff !important;
+        background-image:
+            linear-gradient(45deg, #ececec 25%, transparent 25%),
+            linear-gradient(135deg, #ececec 25%, transparent 25%),
+            linear-gradient(45deg, transparent 75%, #ececec 75%),
+            linear-gradient(135deg, transparent 75%, #ececec 75%) !important;
+        background-size: 16px 16px !important;
+        background-position: 0 0, 8px 0, 8px -8px, 0px 8px !important;
+        border-radius: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+    }
     </style>
     """, unsafe_allow_html=True
 )
