@@ -1,25 +1,9 @@
 import io
-
 import cv2
 import numpy as np
 import streamlit as st
-from PIL import Image, ImageDraw
+from PIL import Image
 from scipy.ndimage import binary_fill_holes, distance_transform_edt, label
-
-# Lasso selection uses plotly through st.plotly_chart(on_select=...), which is a
-# FIRST-PARTY Streamlit API. The previous attempt used streamlit-drawable-canvas
-# and failed three times running: its latest release still calls
-# streamlit.elements.image.image_to_url(), a private helper Streamlit deleted, and
-# each shim only exposed the next incompatibility. Its frontend is built against
-# an old component protocol and cannot be verified without a browser. plotly costs
-# 62 MB of build but 0 MB of RSS, because it imports lazily.
-try:
-    import plotly.graph_objects as go
-
-    LASSO_AVAILABLE = True
-except Exception:  # noqa: BLE001
-    go = None
-    LASSO_AVAILABLE = False
 
 # ---------------------------------------------------------------------------
 # App Configuration & Session State
@@ -28,317 +12,213 @@ st.set_page_config(
     layout="wide",
     page_title="TexAI Extractor Pro",
     page_icon="✨",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="expanded"
 )
 
 if "fringe_val" not in st.session_state:
     st.session_state.fringe_val = 0
 
-# Selective-cleanup widgets are keyed so the Auto panel can write to them. They
-# are seeded here, once, rather than through each widget's value= argument:
-# passing both a default and a session-state value makes Streamlit warn and
-# discard one of them.
-for _key, _default in {
-    "sel_shadow": 25, "sel_trim": 0,
-    "sel_recolour": "Off", "sel_recolour_hex": "#1a1a1a", "sel_recolour_strength": 100,
-}.items():
-    st.session_state.setdefault(_key, _default)
-
-RECOLOUR_MODES = ["Off", "Neutralise cast", "Tint to colour"]
-
-
 def step_fringe(delta: int):
     st.session_state.fringe_val = max(0, min(5, st.session_state.fringe_val + delta))
 
-
 # ---------------------------------------------------------------------------
-# Modern App CSS Styling (Dark Studio Theme)
+# Modern App CSS Styling (Clean Light Theme)
 # ---------------------------------------------------------------------------
 st.markdown(
     """
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-
-    html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
-
-    .stApp { background-color: #0b0f19; }
-
-    .block-container { padding-top: 2rem !important; max-width: 1400px; }
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+    
+    html, body, [class*="css"] { 
+        font-family: 'Inter', sans-serif; 
+    }
+    
+    /* Base App Theme - Clean Light */
+    .stApp { 
+        background-color: #f8fafc; 
+    }
+    
+    /* Layout Spacing */
+    .block-container { 
+        padding-top: 2rem !important; 
+        max-width: 1400px; 
+    }
     header { visibility: hidden; }
     footer { visibility: hidden; }
-
-    .app-header {
-        margin-bottom: 2.5rem;
-        padding-bottom: 1.5rem;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    
+    /* Header Typography */
+    .app-header { 
+        margin-bottom: 2.5rem; 
+        padding-bottom: 1.5rem; 
+        border-bottom: 1px solid rgba(0, 0, 0, 0.05); 
     }
-    .app-title {
-        font-weight: 700;
-        font-size: 2.8rem;
-        letter-spacing: -0.02em;
+    .app-title { 
+        font-weight: 800; 
+        font-size: 2.8rem; 
+        letter-spacing: -0.03em; 
         margin-bottom: 0.25rem;
-        background: linear-gradient(90deg, #ffffff 0%, #a5b4fc 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
+        color: #0f172a;
     }
-    .app-subtitle { font-size: 1.05rem; color: #9ca3af; font-weight: 400; }
-
+    .app-subtitle { 
+        font-size: 1.05rem; 
+        color: #64748b; 
+        font-weight: 400;
+    }
+    
+    /* Sidebar Styling */
     [data-testid="stSidebar"] {
-        background-color: #111827;
-        border-right: 1px solid rgba(255, 255, 255, 0.05);
+        background-color: #ffffff;
+        border-right: 1px solid rgba(0, 0, 0, 0.05);
     }
-    .sidebar-header {
-        font-weight: 600;
-        font-size: 0.85rem;
-        color: #9ca3af;
-        text-transform: uppercase;
+    [data-testid="stSidebar"] * {
+        color: #334155 !important;
+    }
+    .sidebar-header { 
+        font-weight: 700; 
+        font-size: 0.85rem; 
+        color: #94a3b8 !important;
+        text-transform: uppercase; 
         letter-spacing: 0.05em;
-        margin: 1.5rem 0 0.75rem 0;
+        margin: 1.5rem 0 0.75rem 0; 
     }
-
-    .stButton > button {
-        background: linear-gradient(135deg, #4f46e5 0%, #4338ca 100%) !important;
-        color: white !important;
-        border-radius: 12px !important;
-        border: none !important;
-        font-weight: 500 !important;
+    
+    /* Primary Buttons (Sleek Dark) */
+    .stButton > button { 
+        background-color: #0f172a !important;
+        color: white !important; 
+        border-radius: 8px !important; 
+        border: none !important; 
+        font-weight: 500 !important; 
         padding: 0.6rem 1.2rem !important;
         transition: all 0.2s ease !important;
-        box-shadow: 0 4px 12px rgba(79, 70, 229, 0.2) !important;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05) !important;
     }
-    .stButton > button:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 6px 16px rgba(79, 70, 229, 0.4) !important;
+    .stButton > button:hover { 
+        background-color: #334155 !important;
+        transform: translateY(-1px);
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1) !important;
     }
-
-    .stDownloadButton > button {
-        background: linear-gradient(135deg, #10b981 0%, #059669 100%) !important;
-        color: white !important;
-        border-radius: 12px !important;
-        border: none !important;
-        font-weight: 600 !important;
+    
+    /* Download Buttons (Vibrant Action) */
+    .stDownloadButton > button { 
+        background-color: #2563eb !important;
+        color: white !important; 
+        border-radius: 8px !important; 
+        border: none !important; 
+        font-weight: 600 !important; 
         padding: 0.8rem 1.2rem !important;
         margin-top: 1rem;
         transition: all 0.2s ease !important;
-        box-shadow: 0 4px 12px rgba(16, 185, 129, 0.2) !important;
+        box-shadow: 0 4px 6px rgba(37, 99, 235, 0.2) !important;
     }
-    .stDownloadButton > button:hover {
+    .stDownloadButton > button:hover { 
+        background-color: #1d4ed8 !important;
         transform: translateY(-2px);
-        box-shadow: 0 6px 16px rgba(16, 185, 129, 0.4) !important;
+        box-shadow: 0 6px 12px rgba(37, 99, 235, 0.3) !important;
     }
-
-    .image-card-title {
-        font-weight: 600;
-        font-size: 0.85rem;
-        color: #9ca3af;
-        margin-bottom: 0.75rem;
-        text-transform: uppercase;
+    
+    /* Image Cards & Text */
+    .image-card-title { 
+        font-weight: 600; 
+        font-size: 0.85rem; 
+        color: #64748b;
+        margin-bottom: 0.75rem; 
+        text-transform: uppercase; 
         letter-spacing: 0.05em;
     }
-
-    [data-testid="stFileUploaderDropzone"] {
-        border-radius: 16px;
-        border: 2px dashed rgba(255, 255, 255, 0.15);
-        background-color: rgba(255, 255, 255, 0.02);
+    p, span, label, div[data-baseweb="radio"] {
+        color: #334155;
+    }
+    
+    /* Upload Dropzone */
+    [data-testid="stFileUploaderDropzone"] { 
+        border-radius: 12px; 
+        border: 2px dashed #cbd5e1; 
+        background-color: #ffffff;
         transition: all 0.3s ease;
     }
-    [data-testid="stFileUploaderDropzone"]:hover {
-        border-color: #4f46e5;
-        background-color: rgba(79, 70, 229, 0.05);
+    [data-testid="stFileUploaderDropzone"]:hover { 
+        border-color: #2563eb; 
+        background-color: #f8fafc;
     }
-
+    
+    /* White/Light Gray Transparency Grid */
     [data-testid="stImage"] {
         background-color: #ffffff !important;
         background-image:
-            linear-gradient(45deg, #ececec 25%, transparent 25%),
-            linear-gradient(135deg, #ececec 25%, transparent 25%),
-            linear-gradient(45deg, transparent 75%, #ececec 75%),
-            linear-gradient(135deg, transparent 75%, #ececec 75%) !important;
+            linear-gradient(45deg, #f1f5f9 25%, transparent 25%),
+            linear-gradient(135deg, #f1f5f9 25%, transparent 25%),
+            linear-gradient(45deg, transparent 75%, #f1f5f9 75%),
+            linear-gradient(135deg, transparent 75%, #f1f5f9 75%) !important;
         background-size: 16px 16px !important;
         background-position: 0 0, 8px 0, 8px -8px, 0px 8px !important;
         border-radius: 12px;
-        border: 1px solid rgba(255, 255, 255, 0.05);
-        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+        border: 1px solid #e2e8f0;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
         overflow: hidden;
     }
     </style>
-    """,
-    unsafe_allow_html=True,
+    """, unsafe_allow_html=True
 )
 
 # ---------------------------------------------------------------------------
-# ONNX engines
-#
-# Segformer was removed. It brought torch + transformers, and the deploy log
-# showed exactly what that costs: dependencies installed fine and uvicorn came
-# up, then "Loading weights: 100% 380/380" was followed by the rembg model
-# download and then silence — no Python traceback, process gone. That is the
-# signature of an OOM kill, which cannot be caught or logged. torch alone is
-# 583 MB resident on import, before Streamlit's ~230 MB and before either
-# model's weights.
-#
-# (The same log also shows an outbound Hugging Face request succeeding, so the
-# "Streamlit blocks Hugging Face by DNS" theory was never right.)
-#
-# Steady-state RSS measured on a real 1037x1716 photo, over a ~230 MB baseline,
-# against Streamlit Community Cloud's 690 MB floor / 2.7 GB ceiling:
-#
-#   u2netp           317 MB   whole subject, works on flat-lays AND on-model
-#   u2net_cloth_seg  665 MB   clothes only, needs a body in frame
-#
-# Only ONE is ever resident: cache_resource(max_entries=1) evicts the previous
-# session when the model changes, which is what keeps a mode switch from
-# stacking both.
+# Engine 1: Segformer (Strict Clothing Extraction)
 # ---------------------------------------------------------------------------
-SUBJECT_MODEL = "u2netp"
-CLOTH_MODEL = "u2net_cloth_seg"
+@st.cache_resource(show_spinner=False, max_entries=1)
+def load_segformer():
+    from transformers import AutoModelForSemanticSegmentation, SegformerImageProcessor
+    processor = SegformerImageProcessor.from_pretrained("mattmdjaga/segformer_b2_clothes")
+    model = AutoModelForSemanticSegmentation.from_pretrained("mattmdjaga/segformer_b2_clothes")
+    return processor, model
+
+@st.cache_data(show_spinner=False, max_entries=2)
+def segformer_cutout(image_bytes: bytes, grow_px: int) -> bytes:
+    import torch
+    import torch.nn as nn
+    
+    processor, model = load_segformer()
+    source_img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    
+    inputs = processor(images=source_img, return_tensors="pt")
+    with torch.no_grad(): outputs = model(**inputs)
+        
+    logits = outputs.logits.cpu()
+    upsampled_logits = nn.functional.interpolate(logits, size=source_img.size[::-1], mode="bilinear", align_corners=False)
+    pred_seg = upsampled_logits.argmax(dim=1)[0].numpy()
+    
+    clothing_labels = [4, 5, 6, 7]
+    garment_mask_arr = np.isin(pred_seg, clothing_labels).astype(np.uint8) * 255
+    
+    if grow_px > 0:
+        kernel = np.ones((3, 3), np.uint8)
+        garment_mask_arr = cv2.erode(garment_mask_arr, kernel, iterations=grow_px)
+        
+    garment_mask = Image.fromarray(garment_mask_arr, mode="L")
+    cutout = source_img.convert("RGBA")
+    cutout.putalpha(garment_mask)
+    
+    buf = io.BytesIO()
+    cutout.save(buf, format="PNG")
+    return buf.getvalue()
+
+# ---------------------------------------------------------------------------
+# Engine 2: U2Net Cloth (Local Occusion Repair)
+# ---------------------------------------------------------------------------
 MAX_MASK_EDGE = 1024
 
-
-@st.cache_resource(show_spinner=False, max_entries=1)
-def load_ai_session(model_name: str):
-    """Memory-constrained ONNX session. rembg's new_session() builds its own
-    SessionOptions with no way to pass ours, so the class is built directly.
-
-    enable_cpu_mem_arena=False matters more than it looks: with the arena on,
-    RSS climbed 531 -> 731 MB between the first and second inference and never
-    came back down. Off, it stays flat, and it is marginally faster here.
-    """
+@st.cache_resource(show_spinner=False)
+def load_ai_session():
     import onnxruntime as ort
     from rembg.sessions import sessions_class
-
+    
     opts = ort.SessionOptions()
     opts.enable_cpu_mem_arena = False
     opts.intra_op_num_threads = 1
-    opts.inter_op_num_threads = 1
+    
+    session_dict = {cls.name(): cls for cls in sessions_class}
+    return session_dict["u2net_cloth_seg"]("u2net_cloth_seg", opts)
 
-    return {cls.name(): cls for cls in sessions_class}[model_name](model_name, opts)
-
-
-def _shrink(source: Image.Image) -> Image.Image:
-    small = source.copy()
-    small.thumbnail((MAX_MASK_EDGE, MAX_MASK_EDGE), Image.LANCZOS)
-    return small
-
-
-SPILL_PX = 2  # width of the contaminated edge band to repaint
-
-
-def _decontaminate(rgb: np.ndarray, mask: np.ndarray, px: int = SPILL_PX) -> np.ndarray:
-    """Repaint the edge band with real garment colour taken from just inside it.
-
-    Every partially transparent edge pixel in the source photo is a BLEND of
-    garment and backdrop, so it carries the backdrop's colour. On a green screen
-    that is a visible green halo: measured on a real flat-lay, 69.6% of edge
-    pixels were green-tinted, mean RGB (60,106,56).
-
-    Unpremultiplying against the key colour is the textbook fix and only got
-    that to 44.9%, because a segmentation mask is a probability map, not a true
-    matte, so the alpha in the equation is wrong. Eroding to a trusted core and
-    growing its colour outward does not depend on alpha at all and reaches 6.4%.
-    The ALPHA IS LEFT UNTOUCHED, so the silhouette and its antialiasing survive
-    — only the colour under the edge changes.
-    """
-    core = cv2.erode((mask > 127).astype(np.uint8), np.ones((3, 3), np.uint8), iterations=px)
-    if not core.any():
-        return rgb
-
-    distance, indices = distance_transform_edt(1 - core, return_indices=True)
-
-    # Repaint ONLY a narrow band outside the core. The nearest-core lookup is
-    # defined everywhere, so applying it to the whole frame fills the entire
-    # transparent background with rays of garment colour radiating from the
-    # silhouette. That is invisible while alpha is respected — and lands as a
-    # streaked mess the moment anything downstream flattens the PNG or drops the
-    # alpha channel, which is how these files reach a try-on API or a CMS.
-    # Every VISIBLE pixel outside the core, whatever the halo's width — a fixed
-    # band was tried at px+2 and let edge-green back up from 6.7% to 15.6%,
-    # because the kept-backdrop halo runs to ~9px on some photos.
-    band = (distance > 0) & (mask > 0)
-    repainted = rgb.copy()
-    repainted[band] = rgb[indices[0][band], indices[1][band]]
-    return repainted
-
-
-def _sharpen_alpha(mask: np.ndarray, strength: int) -> np.ndarray:
-    """Collapse a wide alpha ramp into a narrow one, pivoting on 50%.
-
-    A segmentation mask fades from opaque to transparent over many pixels — on a
-    real trouser cutout the soft band measured 45 px per row at the inner thigh
-    and 77 px at the hem. Nothing about the fabric is out of focus; the blur is
-    entirely in the alpha channel, and every viewer composites it as a smear.
-
-    Remapping alpha through a steep line centred on 0.5 keeps the 50% contour
-    exactly where it was, so the silhouette does not move or change width — only
-    the transition tightens. Measured on that cutout at strength 6: thigh
-    44.8 px -> 4.6 px, hem 77.2 px -> 11.6 px.
-
-    THIS IS DESTRUCTIVE ON SOFT SUBJECTS. Hair, lace, fur, chiffon and sequins
-    are genuinely semi-transparent at their edges; that partial alpha is real
-    detail, not blur, and this will quantise it into hard chunks. Only turn it
-    up on a hard-edged garment.
-    """
-    if strength <= 1:
-        return mask
-    a = mask.astype(np.float32) / 255.0
-    a = np.clip((a - 0.5) * float(strength) + 0.5, 0.0, 1.0)
-    return np.uint8(np.round(a * 255))
-
-
-def _finish(rgb: np.ndarray, mask: np.ndarray, grow_px: int, spill_px: int = SPILL_PX,
-            sharpen: int = 1) -> bytes:
-    """Decontaminate the edge, apply one — and only one — erosion, then encode."""
-    rgb = _decontaminate(rgb, mask, spill_px)
-    # Order matters: decontaminate first, so that the pixels the sharpener
-    # promotes from partial to opaque already carry real garment colour instead
-    # of the backdrop blend they were holding.
-    mask = _sharpen_alpha(mask, sharpen)
-    if grow_px > 0:
-        mask = cv2.erode(mask, np.ones((3, 3), np.uint8), iterations=grow_px)
-    result = Image.fromarray(rgb).convert("RGBA")
-    result.putalpha(Image.fromarray(mask))
-    buf = io.BytesIO()
-    result.save(buf, format="PNG")
-    return buf.getvalue()
-
-
-# ---------------------------------------------------------------------------
-# Engine 1: whole subject (default)
-#
-# The only engine that works on a flat-lay. Both clothing models need a body to
-# anchor the upper-body region: on a Gemini flat-lay, u2net_cloth_seg returned
-# the trousers at 18.6% of frame but the corset at 0.2% — shredded. u2netp on
-# the same photo scored 99% of the garment with 0% background left behind.
-# ---------------------------------------------------------------------------
-def _subject_mask_and_rgb(image_bytes: bytes):
-    """Shared by the subject and hybrid paths so the model runs once."""
-    from rembg import remove
-
-    source = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-    mask = remove(_shrink(source), session=load_ai_session(SUBJECT_MODEL), only_mask=True)
-    return np.array(source), np.array(mask.resize(source.size, Image.LANCZOS))
-
-
-@st.cache_data(show_spinner=False, max_entries=2)
-def subject_cutout(image_bytes: bytes, grow_px: int, spill_px: int = SPILL_PX,
-                   sharpen: int = 1) -> bytes:
-    rgb, mask = _subject_mask_and_rgb(image_bytes)
-    return _finish(rgb, mask, grow_px, spill_px, sharpen)
-
-
-# ---------------------------------------------------------------------------
-# Engine 2: clothes only, with occlusion repair
-# ---------------------------------------------------------------------------
 def _mirror_fill(rgb: np.ndarray, garment: np.ndarray, occluded: np.ndarray):
-    """Fill hidden fabric from the mirrored side of the same garment piece.
-
-    Garments are near bilaterally symmetric, so fabric behind an arm usually has
-    a real, photographed counterpart. Copying it invents nothing. Ground-truth
-    mean absolute error on a synthetic arm occlusion: 46.7 untouched, 28.0 for
-    cv2.inpaint, 24.1 for this. The symmetry axis is the bounding-box midpoint,
-    not the centroid — the centroid is dragged sideways by whatever the arm
-    removed and scored 28.3, giving up the whole advantage.
-    """
     out = rgb.copy()
     remaining = occluded.copy()
     pieces, count = label(garment | occluded)
@@ -347,12 +227,10 @@ def _mirror_fill(rgb: np.ndarray, garment: np.ndarray, occluded: np.ndarray):
         piece = pieces == index
         target = piece & occluded
         fabric = piece & garment & ~occluded
-        if target.sum() == 0 or fabric.sum() < 500:
-            continue
+        if target.sum() == 0 or fabric.sum() < 500: continue
 
         xs = np.nonzero(fabric)[1]
         axis = int(round((xs.min() + xs.max()) / 2))
-
         ys, xs_t = np.nonzero(target)
         mirrored = 2 * axis - xs_t
         inside = (mirrored >= 0) & (mirrored < rgb.shape[1])
@@ -364,302 +242,70 @@ def _mirror_fill(rgb: np.ndarray, garment: np.ndarray, occluded: np.ndarray):
 
     return out, remaining
 
-
-def _garment_mask_and_rgb(image_bytes: bytes, repair: bool):
-    """Shared by the garment and hybrid paths so the model runs once."""
+@st.cache_data(show_spinner=False, max_entries=2)
+def u2net_cloth_cutout(image_bytes: bytes, repair: bool, grow_px: int) -> bytes:
     source = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     width, height = source.size
 
-    # predict() returns the three masks (upper, lower, full) as a list.
-    # remove(only_mask=True) instead returns ONE image at 3x the height with
-    # them stacked; squashing that back gives a ~6% alpha smear that reads as a
-    # model failure but is a plumbing bug. remove() also swallows unknown
-    # keywords via **kwargs, so an invented return_multiple=True is a no-op.
-    parts = load_ai_session(CLOTH_MODEL).predict(_shrink(source))
-    upper, lower = (
-        np.array(p.convert("L").resize((width, height), Image.LANCZOS)) > 127
-        for p in parts[:2]
-    )
+    small = source.copy()
+    small.thumbnail((MAX_MASK_EDGE, MAX_MASK_EDGE), Image.LANCZOS)
+    parts = load_ai_session().predict(small)
+    
+    upper, lower = (np.array(p.convert("L").resize((width, height), Image.LANCZOS)) > 127 for p in parts[:2])
     garment = upper | lower
     rgb = np.array(source)
 
     if repair:
-        # ENCLOSED gaps only. An arm across the torso encloses a hole; the bare
-        # midriff between a crop top and trousers does not. A morphological
-        # closing would bridge that midriff and weld a two-piece into a
-        # jumpsuit, so it is deliberately not used here.
         occluded = binary_fill_holes(garment) & ~garment
         if occluded.any():
             rgb, remaining = _mirror_fill(rgb, garment, occluded)
             if remaining.any():
-                rgb = cv2.inpaint(
-                    rgb,
-                    cv2.dilate(remaining.astype(np.uint8) * 255, np.ones((3, 3), np.uint8), 1),
-                    3,
-                    cv2.INPAINT_TELEA,
-                )
+                rgb = cv2.inpaint(rgb, cv2.dilate(remaining.astype(np.uint8) * 255, np.ones((3, 3), np.uint8), 1), 3, cv2.INPAINT_TELEA)
             garment = garment | occluded
+            
+    garment_mask = (garment * 255).astype(np.uint8)
+    if grow_px > 0:
+        garment_mask = cv2.erode(garment_mask, np.ones((3, 3), np.uint8), iterations=grow_px)
 
-    return rgb, (garment * 255).astype(np.uint8)
-
-
-@st.cache_data(show_spinner=False, max_entries=2)
-def garment_cutout(image_bytes: bytes, repair: bool, grow_px: int,
-                   spill_px: int = SPILL_PX, sharpen: int = 1) -> bytes:
-    rgb, mask = _garment_mask_and_rgb(image_bytes, repair)
-    return _finish(rgb, mask, grow_px, spill_px, sharpen)
-
-
-# ---------------------------------------------------------------------------
-# Selective cleanup
-#
-# For residue no global step can catch. A drop shadow is the case that matters:
-# it is not the backdrop colour, so the chroma mask never sees it, and it is
-# attached to the garment, so the AI mask keeps it. Nothing automatic in this
-# app removes it.
-#
-# A shadow IS, however, the backdrop at lower brightness. So the first test is
-# chromaticity, not colour: normalise a pixel by its own total brightness and
-# compare that to the backdrop's normalised value. Same hue + darker = shadow.
-#
-# Chromaticity ALONE is not enough, and assuming otherwise destroys garments.
-# Near-black normalises to neutral (0.33,0.33,0.33) — which is exactly a grey
-# backdrop's chromaticity. Measured on a grey studio flat-lay, the hue test on
-# its own took the black trousers from 87.4% surviving to 6.0% at the mildest
-# setting. It looked safe on a green screen only because green is saturated.
-#
-# BRIGHTNESS_FLOOR is what makes it safe. A shadow keeps a real fraction of the
-# backdrop's luminance; black satin keeps almost none (ratio ~0.15 against a
-# grey sweep). Cutting only pixels between the floor and full backdrop
-# brightness separates the two on neutral backdrops as well as saturated ones.
-#
-# Applied to the finished PNG rather than inside the cached engines, so dragging
-# these sliders re-runs a few array ops instead of the model.
-# ---------------------------------------------------------------------------
-# Swept against both failure cases on real photos. Below 0.30 the garment itself
-# starts going (88.5% -> 83.6% -> 66.0% at 0.25); at 0.45 a real green shadow
-# measured at ratio 0.44 sat just under the gate and survived. 0.35 clears more
-# shadow while black satin on a grey sweep stays at 87.4%, unchanged.
-BRIGHTNESS_FLOOR = 0.35
-
-
-def box_region(shape, box_pct) -> np.ndarray:
-    """Rectangle selection, as a boolean mask at image resolution."""
-    height, width = shape
-    (x0, x1), (y0, y1) = box_pct
-    region = np.zeros((height, width), bool)
-    region[
-        int(height * y0 / 100):max(int(height * y1 / 100), int(height * y0 / 100) + 1),
-        int(width * x0 / 100):max(int(width * x1 / 100), int(width * x0 / 100) + 1),
-    ] = True
-    return region
-
-
-def lasso_region(selection, shape, grid_w: int, grid_h: int) -> np.ndarray:
-    """Turn a lasso/box selection over the point grid into a full-resolution mask.
-
-    An invisible grid of points is drawn over the result; plotly returns the ones
-    inside the lasso. Points are emitted row-major, so a point's flat index gives
-    back its cell, and the low-resolution cell mask is then scaled up.
-    """
-    points = (selection or {}).get("points", []) or []
-    if not points:
-        return np.zeros(shape, bool)
-
-    cells = np.zeros((grid_h, grid_w), bool)
-    for point in points:
-        index = point.get("point_index", point.get("pointIndex"))
-        if index is None or index >= grid_w * grid_h:
-            continue
-        cells[index // grid_w, index % grid_w] = True
-
-    if not cells.any():
-        return np.zeros(shape, bool)
-    return cv2.resize(cells.astype(np.uint8), (shape[1], shape[0]),
-                      interpolation=cv2.INTER_NEAREST) > 0
-
-
-def _region_stats(rgb: np.ndarray, alpha: np.ndarray, region: np.ndarray, key_hex: str) -> dict:
-    """Measure what is actually wrong inside the selection.
-
-    Every number here is a count of pixels, not a judgement. The recommendation
-    built from them is shown to the user before anything is applied, because a
-    metric that cannot tell garment from background has already cost this project
-    once: ranking engines by "% of frame kept" picked chroma key, which had left
-    a green wash over the whole garment, over the near-perfect subject cutout.
-    """
-    key = np.array([int(key_hex.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4)], np.float32)
-    visible = region & (alpha > 10)
-    total = max(int(visible.sum()), 1)
-
-    chroma = rgb / (rgb.sum(-1, keepdims=True) + 1e-6)
-    key_chroma = key / (key.sum() + 1e-6)
-    hue_gap = np.linalg.norm(chroma - key_chroma, axis=-1) * 255
-    ratio = rgb.sum(-1) / (key.sum() + 1e-6)
-
-    # Backdrop-hue pixels ABOVE the brightness floor are shadow: the backdrop
-    # seen dimmer. The same hue BELOW it is fabric that happens to be dark, and
-    # cutting it is how black trousers went from 87.4% surviving to 6.0%.
-    shadowy = visible & (hue_gap < 40) & (ratio < 1.0) & (ratio > BRIGHTNESS_FLOOR)
-    # Spill is different: garment pixels carrying the backdrop's colour cast. It
-    # is a COLOUR defect, so trimming or cutting alpha is the wrong tool.
-    spill = visible & (hue_gap < 40) & (ratio <= BRIGHTNESS_FLOOR)
-    soft = region & (alpha > 10) & (alpha < 245)
-
-    gaps = hue_gap[shadowy]
-    return {
-        "visible": total,
-        "shadow_pct": 100.0 * int(shadowy.sum()) / total,
-        "spill_pct": 100.0 * int(spill.sum()) / total,
-        "soft_pct": 100.0 * int(soft.sum()) / total,
-        "shadow_gap_p75": float(np.percentile(gaps, 75)) if gaps.size else 0.0,
-    }
-
-
-def suggest_settings(stats: dict) -> dict:
-    """Turn the measurements into slider values. Deliberately conservative."""
-    shadow = 0
-    if stats["shadow_pct"] >= 1.0:
-        # Sit just above the 75th percentile of the hue gaps actually measured,
-        # so the bulk of what was detected is covered without opening the gate
-        # wider than this photo needs.
-        shadow = int(min(60, max(10, round(stats["shadow_gap_p75"] + 5))))
-    recolour = "Neutralise cast" if stats["spill_pct"] >= 3.0 else "Off"
-    # Trim is blunt and unrecoverable, so it is only suggested when there is a
-    # soft fringe left AND no colour defect that recolouring would fix better.
-    trim = 2 if (stats["soft_pct"] >= 12.0 and recolour == "Off") else 0
-    return {"shadow": shadow, "trim": trim, "recolour": recolour}
-
-
-def recolour_region(rgb: np.ndarray, alpha: np.ndarray, region: np.ndarray,
-                    mode: str, target_hex: str, strength: int) -> np.ndarray:
-    """Repaint colour inside the selection. Alpha is never touched.
-
-    Two different jobs:
-
-    "Neutralise cast" is the right tool for a stubborn coloured halo. It is the
-    same colour-grow used at the silhouette edge: take the nearest pixel that is
-    OUTSIDE the selection and solidly opaque, and copy its colour in. That is
-    real garment colour sampled from the same garment, so it matches weave and
-    lighting instead of flattening them.
-
-    "Tint to colour" is a product change, not a repair — a colourway. Each pixel
-    keeps its own luminance relative to the region mean, so folds, creases and
-    sheen survive; only the hue is replaced. Painting the region flat instead
-    would delete the fabric texture entirely.
-    """
-    if mode == "Off" or strength <= 0 or region is None or not region.any():
-        return rgb
-
-    out = rgb.copy()
-    target_area = region & (alpha > 10)
-    if not target_area.any():
-        return rgb
-    blend = np.clip(strength / 100.0, 0.0, 1.0)
-
-    if mode == "Neutralise cast":
-        donor = (~region) & (alpha > 245)
-        if not donor.any():
-            return rgb
-        indices = distance_transform_edt(~donor, return_indices=True)[1]
-        sampled = rgb[indices[0], indices[1]]
-        out[target_area] = (rgb[target_area] * (1 - blend) + sampled[target_area] * blend)
-        return out
-
-    target = np.array([int(target_hex.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4)], np.float32)
-    lum = rgb @ np.array([0.299, 0.587, 0.114], np.float32)
-    mean_lum = float(lum[target_area].mean()) or 1.0
-    scaled = np.clip(target[None, None, :] * (lum / mean_lum)[..., None], 0, 255)
-    out[target_area] = (rgb[target_area] * (1 - blend) + scaled[target_area] * blend)
-    return out
-
-
-def selective_cleanup(png_bytes: bytes, key_hex: str, region: np.ndarray, shadow: int, trim: int,
-                      recolour: str = "Off", recolour_hex: str = "#000000",
-                      recolour_strength: int = 100) -> bytes:
-    """Trim shadow and border residue, and recolour, inside the selection only."""
-    nothing_to_do = shadow <= 0 and trim <= 0 and recolour == "Off"
-    if nothing_to_do or region is None or not region.any():
-        return png_bytes
-
-    img = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
-    arr = np.array(img)
-    rgb = arr[:, :, :3].astype(np.float32)
-    alpha = arr[:, :, 3]
-
-    if shadow > 0:
-        key = np.array([int(key_hex.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4)], np.float32)
-        total = rgb.sum(axis=-1, keepdims=True) + 1e-6
-        chromaticity = rgb / total
-        key_chroma = key / (key.sum() + 1e-6)
-        hue_gap = np.linalg.norm(chromaticity - key_chroma, axis=-1) * 255
-        ratio = rgb.sum(-1) / (key.sum() + 1e-6)
-        shadowed = (hue_gap < shadow) & (ratio < 1.0) & (ratio > BRIGHTNESS_FLOOR)
-        alpha = np.where(region & shadowed, 0, alpha)
-
-    if trim > 0:
-        trimmed = cv2.erode(alpha, np.ones((3, 3), np.uint8), iterations=trim)
-        alpha = np.where(region, trimmed, alpha)
-
-    # Recolour last, against the alpha that survived the two steps above, so it
-    # never repaints pixels that are about to be cut away.
-    rgb = recolour_region(rgb, alpha, region, recolour, recolour_hex, recolour_strength)
-
-    out = Image.fromarray(np.dstack([rgb, alpha]).astype(np.uint8), "RGBA")
+    result = Image.fromarray(rgb).convert("RGBA")
+    result.putalpha(Image.fromarray(garment_mask))
     buf = io.BytesIO()
-    out.save(buf, format="PNG")
+    result.save(buf, format="PNG")
     return buf.getvalue()
 
-
 # ---------------------------------------------------------------------------
-# Engine 3: chroma key
-#
-# RGB distance, not Cb/Cr — including luma is what lets it keep a black or
-# cream garment (0% -> 93% and 8% -> 97% on the two test photos). The cost is
-# that a lit or textured backdrop also reads as "not the key colour" and
-# survives: on a room interior it kept 100% of the corner. Genuinely good on a
-# flat, evenly lit sweep; misleading anywhere else.
+# Engine 3: Chroma Key
 # ---------------------------------------------------------------------------
 def detect_background_hex(img_array: np.ndarray, border: int = 10) -> str:
     h, w, _ = img_array.shape
     border = min(border, h // 2, w // 2) or 1
     samples = np.concatenate([
-        img_array[:border, :, :].reshape(-1, 3),
-        img_array[-border:, :, :].reshape(-1, 3),
-        img_array[:, :border, :].reshape(-1, 3),
-        img_array[:, -border:, :].reshape(-1, 3),
+        img_array[:border, :, :].reshape(-1, 3), img_array[-border:, :, :].reshape(-1, 3),
+        img_array[:, :border, :].reshape(-1, 3), img_array[:, -border:, :].reshape(-1, 3),
     ])
-    mid = np.median(samples, axis=0).astype(np.uint8)
-    return "#{:02X}{:02X}{:02X}".format(*mid)
+    return "#{:02X}{:02X}{:02X}".format(*samples.mean(axis=0).astype(np.uint8))
 
-
-def chroma_alpha(img_array: np.ndarray, key_hex: str, tola: int, tolb: int) -> np.ndarray:
-    hex_str = key_hex.lstrip("#")
-    target = np.array([int(hex_str[i:i + 2], 16) for i in (0, 2, 4)], dtype=np.float32)
+def chroma_cutout(img_array: np.ndarray, key_hex: str, tola: int, tolb: int, grow_px: int) -> Image.Image:
+    hex_str = key_hex.lstrip('#')
+    target = np.array([int(hex_str[i:i+2], 16) for i in (0, 2, 4)], dtype=np.float32)
     distances = np.linalg.norm(img_array.astype(np.float32) - target, axis=-1)
-    return np.clip((distances - tola) / max(tolb - tola, 1), 0.0, 1.0)
+    alpha_f = np.clip((distances - tola) / max(tolb - tola, 1), 0.0, 1.0)
+    
+    final_rgb = img_array.copy()
+    if grow_px > 0:
+        core = cv2.erode((alpha_f > 0.5).astype(np.uint8), np.ones((3, 3), np.uint8), iterations=grow_px)
+        if core.any():
+            _, indices = distance_transform_edt(1 - core, return_indices=True)
+            final_rgb = np.where(core[..., None].astype(bool), final_rgb, final_rgb[indices[0], indices[1]])
 
-
-def chroma_cutout(img_array: np.ndarray, key_hex: str, tola: int, tolb: int, grow_px: int,
-                  spill_px: int = SPILL_PX, sharpen: int = 1) -> bytes:
-    alpha_f = chroma_alpha(img_array, key_hex, tola, tolb)
-    return _finish(img_array.copy(), np.uint8(alpha_f * 255), grow_px, spill_px, sharpen)
-
+    return Image.fromarray(np.dstack([final_rgb, np.uint8(alpha_f * 255)]), "RGBA")
 
 # ---------------------------------------------------------------------------
 # App Interface
 # ---------------------------------------------------------------------------
-st.markdown(
-    '<div class="app-header"><div class="app-title">TexAI Extractor</div>'
-    '<div class="app-subtitle">High-fidelity garment isolation. Clean catalogue '
-    'assets from flat-lays or on-model shots.</div></div>',
-    unsafe_allow_html=True,
-)
+st.markdown('<div class="app-header"><div class="app-title">TexAI Extractor</div><div class="app-subtitle">High-Fidelity Garment Isolation Engine. Designed to instantly generate clean catalog assets.</div></div>', unsafe_allow_html=True)
 
-uploaded_file = st.file_uploader(
-    "Upload product photo to begin", type=["png", "jpg", "jpeg"], label_visibility="collapsed"
-)
-
+uploaded_file = st.file_uploader("Upload product photo to begin", type=["png", "jpg", "jpeg"], label_visibility="collapsed")
 if uploaded_file is None:
     st.info("Upload a garment photo above to launch the extraction studio.")
     st.stop()
@@ -670,323 +316,81 @@ img_array = np.array(original_image)
 
 with st.sidebar:
     st.markdown('<div class="sidebar-header">Extraction Engine</div>', unsafe_allow_html=True)
-
-    method = st.radio(
-        "Processing Engine",
-        [
-            "Subject cutout (any photo)",
-            "Garment only (needs a person)",
-            "Chroma key (solid backdrop)",
-            "Hybrid (garment + chroma)",
-        ],
-        label_visibility="collapsed",
-    )
-
+    st.error("⚠️ **Garments Only.** This tool explicitly deletes human skin, hair, and body parts.")
+    
+    method = st.radio("Processing Engine", ["Segformer (Pro Garment AI)", "U2Net (Local Occlusion Repair)", "Chroma Key (Studio Green)", "Hybrid (AI + Chroma Key)"], label_visibility="collapsed")
     st.markdown("---")
-
-    if method == "Subject cutout (any photo)":
-        st.info(
-            "Keeps everything that isn't background — a flat-lay, or a model still "
-            "wearing the garment. The only engine that works on a flat-lay, and the "
-            "lightest at ~317 MB."
-        )
-
-    elif method == "Garment only (needs a person)":
-        st.warning(
-            "Deletes skin, hair and shoes, keeping just the clothes. Needs a person "
-            "in frame — on a flat-lay it shreds the upper garment. ~665 MB."
-        )
-        repair_occlusion = st.checkbox(
-            "Rebuild fabric behind arms",
-            value=True,
-            help="Fills only fully enclosed gaps, by mirroring the same piece's other "
-                 "side. A bare midriff is left alone.",
-        )
-
-    elif method == "Chroma key (solid backdrop)":
-        st.warning(
-            "Colour-distance subtraction. Reliable on a flat, evenly lit sweep; on a "
-            "room or a gradient backdrop it keeps the background."
-        )
+    
+    if method == "U2Net (Local Occlusion Repair)":
+        st.info("Maps generic clothing shapes and attempts to mathematically rebuild fabric hidden behind arms.")
+        repair_occlusion = st.checkbox("Rebuild fabric behind arms", value=True)
+        
+    elif method == "Chroma Key (Studio Green)":
+        st.warning("Math-based background subtraction for solid colors.")
         detected_hex = detect_background_hex(img_array)
         key_color_hex = st.color_picker("Key Color", detected_hex)
-        tola = st.slider("Shadow Tolerance", 1, 50, 40)
+        tola = st.slider("Shadow Tolerance", 1, 50, 10)
         tolb = st.slider("Highlight Tolerance", tola + 1, 120, 60)
-
-    else:
-        st.info(
-            "Subject cutout, then anything still matching the key colour is "
-            "subtracted — for shadows or backdrop the AI kept. It can only remove "
-            "pixels, never restore them, so reach for it only when Subject cutout "
-            "leaves something behind."
-        )
+        
+    elif method == "Hybrid (AI + Chroma Key)":
+        st.info("⚡ **Combines AI with precise Chroma math.** Punches out enclosed background gaps and refines edges.")
+        repair_occlusion = st.checkbox("Rebuild fabric behind arms", value=False)
         detected_hex = detect_background_hex(img_array)
         key_color_hex = st.color_picker("Key Color", detected_hex)
-        tola = st.slider("Shadow Tolerance", 1, 50, 40)
+        tola = st.slider("Shadow Tolerance", 1, 50, 10)
         tolb = st.slider("Highlight Tolerance", tola + 1, 120, 60)
-
+        
     with st.expander("Edge Cleanup", expanded=True):
         col_min, col_slide, col_plus = st.columns([1, 4, 1])
-        with col_min:
-            st.button("−", on_click=step_fringe, args=(-1,), width="stretch")
-        with col_slide:
-            grow_px = st.slider("Fringe", 0, 5, key="fringe_val", label_visibility="collapsed")
-        with col_plus:
-            st.button("+", on_click=step_fringe, args=(1,), width="stretch")
+        with col_min: st.button("−", on_click=step_fringe, args=(-1,), width="stretch")
+        with col_slide: grow_px = st.slider("Fringe", 0, 5, key="fringe_val", label_visibility="collapsed")
+        with col_plus: st.button("+", on_click=step_fringe, args=(1,), width="stretch")
 
-        spill_px = st.slider(
-            "Halo width", 1, 8, SPILL_PX,
-            help="How far the backdrop's colour bled into the garment edge. Raise it "
-                 "if a coloured halo survives; on one real cutout the green edge went "
-                 "13.6% -> 3.9% -> 0.3% at widths 2, 3 and 6. Too high smears thin "
-                 "detail like straps, because it erodes further before sampling a "
-                 "trusted colour.",
-        )
-        sharpen = st.slider(
-            "Edge sharpness", 1, 8, 1,
-            help="1 = off. The mask fades from opaque to transparent over many pixels "
-                 "— 45 px per row at the inner thigh, 77 px at the hem on a real "
-                 "trouser cutout — and every viewer composites that fade as a blur. "
-                 "This tightens the fade without moving the silhouette. DESTRUCTIVE ON "
-                 "SOFT SUBJECTS: hair, lace, fur, chiffon and sequins are genuinely "
-                 "semi-transparent at the edge, and this chunks that real detail. Use "
-                 "it on hard-edged garments only.",
-        )
-        if sharpen > 1:
-            st.caption("⚠ Check hair, lace and sequin edges before you ship the file.")
-
-        st.divider()
-        selective = st.checkbox(
-            "Selective cleanup",
-            value=False,
-            help="Clean a chosen area only. For a drop shadow, which is not the "
-                 "backdrop colour and so survives every other step in this app.",
-        )
-        draw_mode = False
-        if selective:
-            if LASSO_AVAILABLE:
-                draw_mode = st.radio(
-                    "Selection",
-                    ["Lasso on the result", "Rectangle sliders"],
-                    label_visibility="collapsed",
-                ) == "Lasso on the result"
-            else:
-                st.caption("Lasso selection needs `plotly` in requirements.txt.")
-
-            if draw_mode:
-                lasso_detail = st.select_slider(
-                    "Selection detail", [40, 60, 90, 130], value=90,
-                    help="Grid resolution behind the lasso. Higher follows the "
-                         "outline more closely and is slower to draw.",
-                )
-            else:
-                box_x = st.slider("Region \u2014 left / right %", 0, 100, (0, 100))
-                box_y = st.slider("Region \u2014 top / bottom %", 0, 100, (60, 100))
-
-            # The Auto panel measures the region and writes its suggestion here,
-            # then reruns. Adopting it must happen BEFORE the widgets exist \u2014
-            # Streamlit refuses to let a widget's value be set after it is drawn.
-            pending = st.session_state.pop("pending_auto", None)
-            if pending:
-                st.session_state["sel_shadow"] = pending["shadow"]
-                st.session_state["sel_trim"] = pending["trim"]
-                st.session_state["sel_recolour"] = pending["recolour"]
-
-            shadow_strength = st.slider(
-                "Shadow removal", 0, 60, key="sel_shadow",
-                help="Cuts pixels inside the region that share the backdrop's hue but "
-                     "are darker. Black fabric is unaffected \u2014 it is dark but neutral, "
-                     "not a dark version of the backdrop. Raise until the shadow goes; "
-                     "if real fabric starts disappearing, you have gone too far.",
-            )
-            extra_trim = st.slider(
-                "Extra trim (px)", 0, 6, key="sel_trim",
-                help="Blunt erosion inside the region only, for border residue that "
-                     "isn't shadow.",
-            )
-
-            recolour_mode = st.radio(
-                "Recolour", RECOLOUR_MODES, key="sel_recolour",
-                help="Repairs or replaces COLOUR inside the region. Alpha is never "
-                     "touched, so the silhouette cannot change. Use it when the defect "
-                     "is a tint rather than something that should be cut away \u2014 "
-                     "trimming a coloured halo removes garment, recolouring it does not.",
-            )
-            recolour_hex = "#1a1a1a"
-            recolour_strength = 100
-            if recolour_mode == "Tint to colour":
-                recolour_hex = st.color_picker("Target colour", key="sel_recolour_hex")
-                st.caption(
-                    "Each pixel keeps its own brightness, so folds and sheen survive "
-                    "\u2014 only the hue is replaced."
-                )
-            if recolour_mode != "Off":
-                recolour_strength = st.slider(
-                    "Recolour strength %", 0, 100, key="sel_recolour_strength",
-                    help="Blend against the original. Below 100 the old colour shows "
-                         "through, which is often what you want on a partial cast.",
-                )
-
+# ---------------------------------------------------------------------------
+# Processing
+# ---------------------------------------------------------------------------
 col1, col2 = st.columns(2, gap="large")
 
 with col1:
     st.markdown('<div class="image-card-title">Source Image</div>', unsafe_allow_html=True)
-    preview = original_image
-    if selective and not draw_mode:
-        # Show the rectangle, otherwise the sliders are guesswork.
-        preview = original_image.copy()
-        w, h = preview.size
-        ImageDraw.Draw(preview).rectangle(
-            [int(w * box_x[0] / 100), int(h * box_y[0] / 100),
-             int(w * box_x[1] / 100) - 1, int(h * box_y[1] / 100) - 1],
-            outline=(79, 70, 229), width=max(2, w // 250),
-        )
-    st.image(preview, width="stretch")
+    st.image(original_image, width="stretch")
 
 with col2:
     st.markdown('<div class="image-card-title">Extraction Result</div>', unsafe_allow_html=True)
-
+    
     try:
-        with st.spinner("Extracting… the first run for each engine downloads its model."):
-            if method == "Subject cutout (any photo)":
-                out_bytes = subject_cutout(image_bytes, grow_px, spill_px, sharpen)
-
-            elif method == "Garment only (needs a person)":
-                out_bytes = garment_cutout(image_bytes, repair_occlusion, grow_px, spill_px, sharpen)
-
-            elif method == "Chroma key (solid backdrop)":
-                out_bytes = chroma_cutout(img_array, key_color_hex, tola, tolb, grow_px, spill_px, sharpen)
-
-            else:
-                # Erode ONCE, at the end. Eroding inside each branch and again on
-                # the combined mask is a triple pass: at fringe=5 that took an
-                # 8 px strap to zero and ate 27% of the garment area.
-                # Intersect the SUBJECT mask, not the cloth mask. Measured against
-                # the reference silhouette on a green-screen flat-lay:
-                #   cloth_seg alone          6.7% of the garment punched away
-                #   min(cloth, chroma)       6.8%   <- what this used to be
-                #   min(subject, chroma)     0.8% holes, 0.0% background kept
-                # min() can only subtract, so intersecting with the engine that
-                # shreds flat-lays guaranteed a shredded result.
-                rgb, subject_mask = _subject_mask_and_rgb(image_bytes)
-                chroma_mask = np.uint8(chroma_alpha(img_array, key_color_hex, tola, tolb) * 255)
-                out_bytes = _finish(rgb, np.minimum(subject_mask, chroma_mask), grow_px,
-                                    spill_px, sharpen)
-
-        if selective:
-            raw = Image.open(io.BytesIO(out_bytes)).convert("RGBA")
-            shape = (raw.size[1], raw.size[0])
-
-            if draw_mode:
-                # Select ON the result, not the source — you can only see what
-                # needs erasing once the background is already gone.
-                st.caption("Lasso around what should be erased, then it is applied below.")
-                grid_w = int(lasso_detail)
-                grid_h = max(int(grid_w * raw.size[1] / raw.size[0]), 1)
-
-                # Invisible, selectable grid over the image. Row-major order is
-                # what lets lasso_region() map a point index back to a cell.
-                ys_grid, xs_grid = np.mgrid[0:grid_h, 0:grid_w]
-                figure = go.Figure(
-                    go.Scattergl(
-                        x=((xs_grid.ravel() + 0.5) * raw.size[0] / grid_w),
-                        y=((ys_grid.ravel() + 0.5) * raw.size[1] / grid_h),
-                        mode="markers",
-                        marker=dict(size=6, opacity=0),
-                        hoverinfo="skip",
-                        showlegend=False,
-                    )
-                )
-                backdrop = Image.new("RGBA", raw.size, (120, 120, 120, 255))
-                figure.add_layout_image(
-                    dict(
-                        source=Image.alpha_composite(backdrop, raw).convert("RGB"),
-                        xref="x", yref="y", x=0, y=0,
-                        sizex=raw.size[0], sizey=raw.size[1],
-                        sizing="stretch", layer="below",
-                    )
-                )
-                figure.update_xaxes(visible=False, range=[0, raw.size[0]])
-                figure.update_yaxes(
-                    visible=False, range=[raw.size[1], 0],
-                    scaleanchor="x", scaleratio=1,
-                )
-                figure.update_layout(
-                    dragmode="lasso",
-                    margin=dict(l=0, r=0, t=0, b=0),
-                    height=460,
-                    paper_bgcolor="rgba(0,0,0,0)",
-                    plot_bgcolor="rgba(0,0,0,0)",
-                )
-                event = st.plotly_chart(
-                    figure,
-                    use_container_width=True,
-                    on_select="rerun",
-                    selection_mode=("lasso", "box"),
-                    key="cleanup_lasso",
-                )
-                region = lasso_region(
-                    (event or {}).get("selection"), shape, grid_w, grid_h
-                )
-            else:
-                region = box_region(shape, (box_x, box_y))
-
-            key_hex = detect_background_hex(img_array)
-
-            if region.any():
-                with st.expander("Auto — analyse this selection", expanded=False):
-                    pre = np.array(Image.open(io.BytesIO(out_bytes)).convert("RGBA"))
-                    stats = _region_stats(
-                        pre[:, :, :3].astype(np.float32), pre[:, :, 3], region, key_hex
-                    )
-                    tip = suggest_settings(stats)
-
-                    left, mid, right = st.columns(3)
-                    left.metric("Shadow", f"{stats['shadow_pct']:.1f}%",
-                                help="Backdrop hue, dimmer than the backdrop, bright "
-                                     "enough not to be dark fabric. Cuttable.")
-                    mid.metric("Colour cast", f"{stats['spill_pct']:.1f}%",
-                               help="Backdrop hue but too dark to be shadow — garment "
-                                    "carrying the backdrop's colour. Recolour, do not cut.")
-                    right.metric("Soft edge", f"{stats['soft_pct']:.1f}%",
-                                 help="Partly transparent pixels in the selection.")
-
-                    st.caption(
-                        f"Suggests shadow {tip['shadow']}, trim {tip['trim']} px, "
-                        f"recolour “{tip['recolour']}” over "
-                        f"{stats['visible']:,} visible pixels."
-                    )
-                    st.caption(
-                        "These are pixel counts, not a verdict — nothing is applied "
-                        "until you press the button, and the sliders stay yours afterwards."
-                    )
-                    if st.button("Apply suggestion", width="stretch"):
-                        st.session_state["pending_auto"] = tip
-                        st.rerun()
-
-            out_bytes = selective_cleanup(
-                out_bytes,
-                key_hex,
-                region,
-                shadow_strength,
-                extra_trim,
-                recolour_mode,
-                recolour_hex,
-                recolour_strength,
-            )
-
-        extracted_image = Image.open(io.BytesIO(out_bytes))
+        with st.spinner("Extracting garments..."):
+            if method == "Segformer (Pro Garment AI)":
+                out_bytes = segformer_cutout(image_bytes, grow_px)
+                extracted_image = Image.open(io.BytesIO(out_bytes))
+            
+            elif method == "U2Net (Local Occlusion Repair)":
+                out_bytes = u2net_cloth_cutout(image_bytes, repair_occlusion, grow_px)
+                extracted_image = Image.open(io.BytesIO(out_bytes))
+            
+            elif method == "Chroma Key (Studio Green)":
+                extracted_image = chroma_cutout(img_array, key_color_hex, tola, tolb, grow_px)
+            
+            elif method == "Hybrid (AI + Chroma Key)":
+                ai_bytes = u2net_cloth_cutout(image_bytes, repair_occlusion, grow_px)
+                ai_alpha = np.array(Image.open(io.BytesIO(ai_bytes)).split()[-1])
+                
+                chroma_img = chroma_cutout(img_array, key_color_hex, tola, tolb, grow_px)
+                chroma_alpha = np.array(chroma_img.split()[-1])
+                
+                combined_alpha = np.minimum(ai_alpha, chroma_alpha)
+                
+                if grow_px > 0:
+                    combined_alpha = cv2.erode(combined_alpha, np.ones((3, 3), np.uint8), iterations=grow_px)
+                    
+                extracted_image = chroma_img.copy()
+                extracted_image.putalpha(Image.fromarray(combined_alpha))
+                
         st.image(extracted_image, width="stretch")
-        st.download_button(
-            "↓ Export Transparent Garment",
-            data=out_bytes,
-            file_name="garment_asset.png",
-            mime="image/png",
-            width="stretch",
-        )
-
-    except ModuleNotFoundError as exc:
-        st.error(f"Missing dependency: `{exc.name}`")
-        st.info("Add `rembg` and `onnxruntime` to requirements.txt, then reboot the app.")
-    except Exception as exc:  # noqa: BLE001
+        
+        buf = io.BytesIO()
+        extracted_image.save(buf, format="PNG")
+        st.download_button("↓ Export Transparent Garment", data=buf.getvalue(), file_name="garment_asset.png", mime="image/png", width="stretch")
+            
+    except Exception as exc: 
         st.error(f"Processing Error: {exc}")
