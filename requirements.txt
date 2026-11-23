@@ -6,3 +6,4 @@ scipy
 rembg
 onnxruntime
 plotly
+gradio_client>=2.0,<3

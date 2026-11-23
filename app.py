@@ -93,7 +93,8 @@ st.markdown(
         transition: all 0.2s ease !important;
         box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05) !important;
     }
-    .stButton > button:hover { 
+    .stButton > button p, .stDownloadButton > button p { color: white !important; }
+    .stButton > button:hover {
         background-color: #334155 !important;
         transform: translateY(-1px);
         box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1) !important;
@@ -301,6 +302,113 @@ def chroma_cutout(img_array: np.ndarray, key_hex: str, tola: int, tolb: int, gro
     return Image.fromarray(np.dstack([final_rgb, np.uint8(alpha_f * 255)]), "RGBA")
 
 # ---------------------------------------------------------------------------
+# 3D Generation (offloaded to hosted GPU Spaces via gradio_client)
+# ---------------------------------------------------------------------------
+# This Space runs on CPU, so image-to-3D runs on public ZeroGPU Spaces.
+# Anonymous callers share a small GPU quota that is often exhausted; set an
+# HF_TOKEN secret on this Space so calls count against your own quota.
+ENGINES_3D = {
+    "TRELLIS (textured, ~30s)": "trellis-community/TRELLIS",
+    "Hunyuan3D-2 (shape only, no texture)": "tencent/Hunyuan3D-2",
+}
+
+def prepare_for_3d(cutout: Image.Image, margin: float = 0.1) -> bytes:
+    """Crop the garment to its alpha bounding box and centre it on a square transparent canvas."""
+    rgba = cutout.convert("RGBA")
+    bbox = rgba.getchannel("A").point(lambda a: 255 if a > 10 else 0).getbbox()
+    if bbox is None:
+        raise ValueError("The extraction is empty - there is no garment to turn into 3D.")
+    rgba = rgba.crop(bbox)
+    side = int(max(rgba.size) * (1 + 2 * margin))
+    canvas = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+    canvas.paste(rgba, ((side - rgba.width) // 2, (side - rgba.height) // 2), rgba)
+    canvas.thumbnail((1024, 1024), Image.LANCZOS)
+    buf = io.BytesIO()
+    canvas.save(buf, format="PNG")
+    return buf.getvalue()
+
+def _file_path(value):
+    """Gradio returns either a plain path or an update dict like {'value': path}."""
+    if isinstance(value, dict):
+        return value.get("value") or value.get("path")
+    return value
+
+@st.cache_data(show_spinner=False, max_entries=4)
+def generate_3d(png_bytes: bytes, engine: str) -> bytes:
+    import os
+    import tempfile
+    from gradio_client import Client, handle_file
+
+    token = os.environ.get("HF_TOKEN") or None
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+        tmp.write(png_bytes)
+        input_path = tmp.name
+    try:
+        client = Client(ENGINES_3D[engine], token=token, verbose=False)
+        if engine.startswith("TRELLIS"):
+            # The UI normally fires these on page load / upload; API callers must do it explicitly.
+            client.predict(api_name="/start_session")  # creates the per-session output folder
+            prepped = client.predict(handle_file(input_path), api_name="/preprocess_image")  # keeps our alpha
+            _, _, glb_path = client.predict(
+                image=handle_file(_file_path(prepped)),
+                multiimages=[],
+                seed=0,
+                ss_guidance_strength=7.5,
+                ss_sampling_steps=12,
+                slat_guidance_strength=3.0,
+                slat_sampling_steps=12,
+                multiimage_algo="stochastic",
+                mesh_simplify=0.95,
+                texture_size=1024,
+                api_name="/generate_and_extract_glb",
+            )
+        else:
+            # The public Space's texture stage is broken, so only the shape endpoint is usable.
+            glb_path, *_ = client.predict(
+                caption=None,
+                image=handle_file(input_path),
+                mv_image_front=None, mv_image_back=None, mv_image_left=None, mv_image_right=None,
+                steps=30,
+                guidance_scale=5.0,
+                seed=1234,
+                octree_resolution=256,
+                check_box_rembg=False,  # already cut out; re-running rembg can eat garment edges
+                num_chunks=8000,
+                randomize_seed=False,
+                api_name="/shape_generation",
+            )
+    finally:
+        os.unlink(input_path)
+
+    with open(_file_path(glb_path), "rb") as fh:
+        return fh.read()
+
+def explain_3d_error(exc: Exception) -> str:
+    import os
+    msg = str(exc)
+    if "quota" in msg.lower() or "runs limit" in msg.lower() or "upstream gradio app has raised" in msg.lower():
+        hint = ("Add an `HF_TOKEN` secret (Space → Settings → Variables and secrets) so calls use your own GPU quota."
+                if not os.environ.get("HF_TOKEN") else
+                "Your Hugging Face GPU quota may be used up for now - wait and retry, or switch engine.")
+        return f"The hosted 3D engine refused the job. {hint}\n\nDetails: {msg}"
+    return f"3D generation failed: {msg}"
+
+def render_glb_viewer(glb_bytes: bytes, height: int = 520):
+    import base64
+    import streamlit.components.v1 as components
+    b64 = base64.b64encode(glb_bytes).decode()
+    components.html(
+        f"""
+        <script type="module" src="https://ajax.googleapis.com/ajax/libs/model-viewer/3.5.0/model-viewer.min.js"></script>
+        <model-viewer src="data:model/gltf-binary;base64,{b64}" camera-controls auto-rotate
+            shadow-intensity="1" exposure="1" environment-image="neutral"
+            style="width:100%;height:{height - 20}px;background:#f1f5f9;border-radius:12px;">
+        </model-viewer>
+        """,
+        height=height,
+    )
+
+# ---------------------------------------------------------------------------
 # App Interface
 # ---------------------------------------------------------------------------
 st.markdown('<div class="app-header"><div class="app-title">TexAI Extractor</div><div class="app-subtitle">High-Fidelity Garment Isolation Engine. Designed to instantly generate clean catalog assets.</div></div>', unsafe_allow_html=True)
@@ -392,5 +500,38 @@ with col2:
         extracted_image.save(buf, format="PNG")
         st.download_button("↓ Export Transparent Garment", data=buf.getvalue(), file_name="garment_asset.png", mime="image/png", width="stretch")
             
-    except Exception as exc: 
+    except Exception as exc:
         st.error(f"Processing Error: {exc}")
+        extracted_image = None
+
+# ---------------------------------------------------------------------------
+# 3D Studio
+# ---------------------------------------------------------------------------
+if extracted_image is not None:
+    st.markdown("---")
+    st.markdown('<div class="image-card-title">3D Model</div>', unsafe_allow_html=True)
+    st.caption("Turns the extracted garment into a textured, rotatable 3D model (.glb). "
+               "The back and sides are AI-generated guesses - a single photo cannot show them.")
+
+    col_engine, col_go = st.columns([3, 1])
+    with col_engine:
+        engine_3d = st.selectbox("3D Engine", list(ENGINES_3D), label_visibility="collapsed")
+    with col_go:
+        go_3d = st.button("✨ Generate 3D", width="stretch", type="primary")
+
+    try:
+        input_3d = prepare_for_3d(extracted_image)
+        job_key = (hash(input_3d), engine_3d)
+        if go_3d:
+            with st.spinner("Building 3D model on a hosted GPU (20s – 2 min)..."):
+                st.session_state.glb = generate_3d(input_3d, engine_3d)
+                st.session_state.glb_key = job_key
+
+        if st.session_state.get("glb") and st.session_state.get("glb_key") == job_key:
+            render_glb_viewer(st.session_state.glb)
+            st.download_button("↓ Export 3D Model (.glb)", data=st.session_state.glb,
+                               file_name="garment_model.glb", mime="model/gltf-binary", width="stretch")
+        elif st.session_state.get("glb"):
+            st.info("Extraction settings changed - press Generate 3D to rebuild the model.")
+    except Exception as exc:
+        st.error(explain_3d_error(exc))
